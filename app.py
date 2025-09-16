@@ -25,8 +25,8 @@ load_dotenv()
 # Initialize Supabase
 @st.cache_resource
 def init_supabase():
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_KEY")
+    url = st.secrets.SUPABASE_URL
+    key = st.secrets.UPABASE_KEY
     return create_client(url, key)
 
 supabase = init_supabase()
