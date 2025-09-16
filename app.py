@@ -26,7 +26,7 @@ load_dotenv()
 @st.cache_resource
 def init_supabase():
     url = st.secrets.SUPABASE_URL
-    key = st.secrets.UPABASE_KEY
+    key = st.secrets.SUPABASE_KEY
     return create_client(url, key)
 
 supabase = init_supabase()
