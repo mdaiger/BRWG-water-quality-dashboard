@@ -936,7 +936,7 @@ def dashboard():
                 selected_site = st.selectbox("Site", temp_site_options, index=default_site_index, key="temp_site_selection")
             with col2:
                 # Default to today if no date was preselected
-                selected_date = st.date_input("Date", value=default_date or date.today(), format="MM/DD/YYYY", key="temp_date_input")
+                selected_date = st.date_input("Date", value=default_date or datetime.today().date(), format="MM/DD/YYYY", key="temp_date_input")
         
         # Fetch existing data for the selected site and date
         existing_data = None
