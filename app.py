@@ -32,12 +32,12 @@ def init_supabase():
 supabase = init_supabase()
 
 # Admin email - only this user can manage sites
-ADMIN_EMAIL = "megandaiger@gmail.com"  # Change this to your actual admin email
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "megandaiger@gmail.com")
 
 def is_admin(email):
     """Check if user is admin"""
-    # Check hardcoded admin
-    if email == "megandaiger@gmail.com":
+    # Check env-configured admin
+    if email == ADMIN_EMAIL:
         return True
     
     # Check if user has been approved in pending_admins table
@@ -470,27 +470,20 @@ def manage_sites(is_user_admin):
                     with col_save:
                         if st.form_submit_button(" Save Changes", type="primary"):
                             try:
-                                # Update in database
-                                site_id = site_info.get('id')
-                                if site_id:
-                                    # Update existing site
-                                    supabase.table('sites').update({
+                                # Defer actual save; store pending site changes and confirm
+                                st.session_state['pending_site_save'] = {
+                                    'id': site_info.get('id'),
+                                    'payload': {
                                         'site_number': new_site_number,
                                         'full_name': new_full_name,
                                         'short_name': new_short_name,
                                         'latitude': new_latitude,
                                         'longitude': new_longitude,
                                         'elevation': new_elevation,
-                                        'description': new_description,
-                                        'updated_at': 'NOW()'
-                                    }).eq('id', site_id).execute()
-                                    
-                                    st.success(f" Updated {new_short_name} site information in database!")
-                                else:
-                                    st.warning(" Site ID not found - changes saved temporarily only")
-                                
-                                st.session_state[editing_key] = False
-                                st.rerun()
+                                        'description': new_description
+                                    }
+                                }
+                                st.info("Please confirm your site changes below.")
                                 
                             except Exception as e:
                                 st.error(f" Error saving to database: {str(e)}")
@@ -526,6 +519,38 @@ def manage_sites(is_user_admin):
                     'lon': [site_info['longitude']]
                 })
                 st.map(site_map_data, zoom=13)
+
+    # Confirmation UI for site changes
+    if st.session_state.get('pending_site_save'):
+        pending_site = st.session_state['pending_site_save']
+        st.warning("Confirm updating site information:")
+        payload = pending_site['payload']
+        st.write(f"Short Name: {payload['short_name']}")
+        st.write(f"Full Name: {payload['full_name']}")
+        st.write(f"Site Number: {payload['site_number']}")
+        st.write(f"Elevation: {payload['elevation']}")
+        st.write(f"Lat/Lon: {payload['latitude']}, {payload['longitude']}")
+        if payload.get('description'):
+            st.write(f"Description: {payload['description']}")
+        col_ok, col_cancel = st.columns(2)
+        with col_ok:
+            if st.button("✅ Confirm Site Update", type="primary"):
+                try:
+                    site_id = pending_site.get('id')
+                    if site_id:
+                        supabase.table('sites').update(payload).eq('id', site_id).execute()
+                        st.success("Site updated successfully.")
+                    else:
+                        st.warning("Site ID not found - unable to write to database.")
+                except Exception as e:
+                    st.error(f"Error updating site: {str(e)}")
+                finally:
+                    st.session_state.pop('pending_site_save', None)
+                    st.rerun()
+        with col_cancel:
+            if st.button("❌ Cancel Site Update"):
+                st.session_state.pop('pending_site_save', None)
+                st.info("Site changes canceled.")
     
     # Add new site section
     st.markdown("---")
@@ -569,9 +594,7 @@ def manage_sites(is_user_admin):
                 st.error("Please fill in both fields")
         
 
-    # Database integration note
-    st.markdown("---")
-    st.info("💾 **Database Integration Active:** Site changes are now saved permanently to the database!")
+    # Removed database integration note per request
 
 def login():
     """Handle user login"""
@@ -635,6 +658,13 @@ def view_data():
         if not df.empty:
             # Convert date column to datetime
             df['date'] = pd.to_datetime(df['date'])
+            # Versioning for chart widgets to force remount on data changes
+            charts_version = st.session_state.get('charts_version', 0)
+            try:
+                latest_date = str(df['date'].max())
+            except Exception:
+                latest_date = ""
+            data_version = f"{len(df)}_{latest_date}_{charts_version}"
             
             # Create abbreviated site names for legend using dynamic sites
             sites = get_sites()
@@ -670,15 +700,18 @@ def view_data():
                     df_processed = df.copy()
                     
                     # Process data site by site to handle nulls properly
-                    for site in df['site'].unique():
-                        site_mask = df_processed['site'] == site
-                        site_data = df_processed[site_mask].copy()
-                        
-                        # Convert zeros to NaN for this site's data to create breaks
-                        site_data.loc[site_data[param_col] == 0, param_col] = float('nan')
-                        
-                        # Update the main dataframe
-                        df_processed.loc[site_mask, param_col] = site_data[param_col]
+                    # Only convert zeros to NaN for parameters where zero is not meaningful
+                    zero_not_meaningful = param_col in ['dissolved_oxygen_mg', 'dissolved_oxygen_sat', 'hardness', 'alkalinity', 'ph']
+                    if zero_not_meaningful:
+                        for site in df['site'].unique():
+                            site_mask = df_processed['site'] == site
+                            site_data = df_processed[site_mask].copy()
+                            
+                            # Convert zeros to NaN for this site's data to create breaks
+                            site_data.loc[site_data[param_col] == 0, param_col] = float('nan')
+                            
+                            # Update the main dataframe
+                            df_processed.loc[site_mask, param_col] = site_data[param_col]
                     
                     # Define consistent colors for all sites
                     color_map = {
@@ -689,12 +722,15 @@ def view_data():
                     
                     
                     # Create the plot
-                    fig = px.line(df_processed, x='date', y=param_col, color='site_abbrev', 
-                                  title=f'{param_title} - All Sites',
-                                  labels={'date': 'Date', param_col: param_title, 'site_abbrev': 'Site'},
-                                  custom_data=['site', 'id'] if is_user_admin else None,
-                                  markers=True,
-                                  color_discrete_map=color_map)
+                    with st.spinner('Loading chart...'):
+                        fig = px.line(
+                            df_processed, x='date', y=param_col, color='site_abbrev',
+                            title=f'{param_title} - All Sites',
+                            labels={'date': 'Date', param_col: param_title, 'site_abbrev': 'Site'},
+                            custom_data=['site', 'id'] if is_user_admin else None,
+                            markers=True,
+                            color_discrete_map=color_map
+                        )
                 
                 fig.update_layout(
                     height=400,
@@ -718,7 +754,13 @@ def view_data():
                 
                 # Show interactive charts for admin users, regular charts for volunteers
                 if is_user_admin:
-                    clicked_points = plotly_events(fig, click_event=True, hover_event=True, select_event=False, key=f"plotly_{param_col}")
+                    clicked_points = plotly_events(
+                        fig,
+                        click_event=True,
+                        hover_event=True,
+                        select_event=False,
+                        key=f"plotly_{param_col}_{data_version}"
+                    )
                     
                     # Handle click events - store data but don't auto-navigate
                     if clicked_points:
@@ -893,7 +935,8 @@ def dashboard():
             with col1:
                 selected_site = st.selectbox("Site", temp_site_options, index=default_site_index, key="temp_site_selection")
             with col2:
-                selected_date = st.date_input("Date", value=default_date, format="MM/DD/YYYY", key="temp_date_input")
+                # Default to today if no date was preselected
+                selected_date = st.date_input("Date", value=default_date or date.today(), format="MM/DD/YYYY", key="temp_date_input")
         
         # Fetch existing data for the selected site and date
         existing_data = None
@@ -934,7 +977,7 @@ def dashboard():
         with st.form("water_quality_form"):
             # Use the site and date from outside the form - no need to duplicate
             site = selected_site
-            date = selected_date
+            # Avoid shadowing datetime.date by not using the name 'date' here
             
             col1, col2 = st.columns(2)
             
@@ -944,7 +987,7 @@ def dashboard():
                 col_input, col_checkbox = st.columns([3, 1])
                 with col_input:
                     dissolved_oxygen_mg = st.number_input("Dissolved Oxygen (mg/L)", 
-                                                        value=float(existing_do_mg) if existing_do_mg is not None else None, 
+                                                        value=float(existing_do_mg) if existing_do_mg is not None else 0.0, 
                                                         format="%.2f", key="dissolved_oxygen_mg_input")
                 with col_checkbox:
                     st.markdown('<div style="margin-top: 25px; font-size: 0.8em;">', unsafe_allow_html=True)
@@ -955,8 +998,7 @@ def dashboard():
                 if do_mg_not_available:
                     dissolved_oxygen_mg = None
                 else:
-                    # Keep the actual numeric value from the input
-                    pass  # dissolved_oxygen_mg already has the correct value from number_input
+                    pass
                 
                 # Dissolved Oxygen (% saturation)
                 existing_do_sat = existing_data['dissolved_oxygen_sat'] if existing_data else None
@@ -964,7 +1006,7 @@ def dashboard():
                 with col_input:
                     dissolved_oxygen_sat = st.number_input("Dissolved Oxygen (% saturation)", 
                                                          min_value=0.0, max_value=200.0,
-                                                         value=float(existing_do_sat) if existing_do_sat is not None else None, 
+                                                         value=float(existing_do_sat) if existing_do_sat is not None else 0.0, 
                                                          format="%.1f", key="dissolved_oxygen_sat_input")
                 with col_checkbox:
                     st.markdown('<div style="margin-top: 25px; font-size: 0.8em;">', unsafe_allow_html=True)
@@ -995,7 +1037,7 @@ def dashboard():
                         hardness = None
                     else:
                         hardness = st.number_input("Hardness (mg/L CaCO3)", 
-                                                 value=float(existing_hardness) if existing_hardness is not None else None, 
+                                                 value=float(existing_hardness) if existing_hardness is not None else 0.0, 
                                                  format="%.1f", key="hardness_input")
                 
                 # Alkalinity
@@ -1003,7 +1045,7 @@ def dashboard():
                 col_input, col_checkbox = st.columns([3, 1])
                 with col_input:
                     alkalinity = st.number_input("Alkalinity (mg/L CaCO3)", 
-                                               value=float(existing_alkalinity) if existing_alkalinity is not None else None, 
+                                               value=float(existing_alkalinity) if existing_alkalinity is not None else 0.0, 
                                                format="%.1f", key="alkalinity_input")
                 with col_checkbox:
                     st.markdown('<div style="margin-top: 25px; font-size: 0.8em;">', unsafe_allow_html=True)
@@ -1020,7 +1062,7 @@ def dashboard():
                 col_input, col_checkbox = st.columns([3, 1])
                 with col_input:
                     ph = st.number_input("pH (S.U.s)", min_value=0.0, max_value=14.0,
-                                       value=float(existing_ph) if existing_ph is not None else None, 
+                                       value=float(existing_ph) if existing_ph is not None else 7.0, 
                                        format="%.1f", key="ph_input")
                 with col_checkbox:
                     st.markdown('<div style="margin-top: 25px; font-size: 0.8em;">', unsafe_allow_html=True)
@@ -1036,7 +1078,7 @@ def dashboard():
                 col_input, col_checkbox = st.columns([3, 1])
                 with col_input:
                     temperature = st.number_input("Temperature (°C)", 
-                                                value=float(existing_temp) if existing_temp is not None else None, 
+                                                value=float(existing_temp) if existing_temp is not None else 0.0, 
                                                 format="%.1f", key="temperature_input")
                 with col_checkbox:
                     st.markdown('<div style="margin-top: 25px; font-size: 0.8em;">', unsafe_allow_html=True)
@@ -1052,7 +1094,7 @@ def dashboard():
                 col_input, col_checkbox = st.columns([3, 1])
                 with col_input:
                     flow = st.number_input("Flow (cfs)", 
-                                         value=float(existing_flow) if existing_flow is not None else None, 
+                                         value=float(existing_flow) if existing_flow is not None else 0.0, 
                                          format="%.2f", key="flow_input")
                 with col_checkbox:
                     st.markdown('<div style="margin-top: 25px; font-size: 0.8em;">', unsafe_allow_html=True)
@@ -1076,87 +1118,90 @@ def dashboard():
                 if not selected_date:
                     st.error("Please select a date before submitting.")
                     return
-                    
-                try:
-                    # Map full site names to the original site names that the database expects
-                    site_name_mapping = {
-                        'Blue River at Silverthorne Pavilion- 196': 'Site 1',
-                        'Snake River KSS- 52': 'Site 2',
-                        'Swan River Reach A- 1007': 'Site 3'
-                    }
-                    
-                    # Use mapped site name or original if not found
-                    db_site_name = site_name_mapping.get(selected_site, selected_site)
-                    
-                    # Prepare data with proper NULL handling
-                    data = {
-                        'site': db_site_name,
-                        'date': selected_date.strftime('%Y-%m-%d'),
-                        'user_id': st.session_state['user'].user.id,
-                        'notes': notes
-                    }
-                    
-                    # Only add non-None values to prevent 0 conversion
-                    if dissolved_oxygen_mg is not None:
-                        data['dissolved_oxygen_mg'] = dissolved_oxygen_mg
-                    if dissolved_oxygen_sat is not None:
-                        data['dissolved_oxygen_sat'] = dissolved_oxygen_sat
-                    if hardness is not None:
-                        data['hardness'] = hardness
-                    if alkalinity is not None:
-                        data['alkalinity'] = alkalinity
-                    if ph is not None:
-                        data['ph'] = ph
-                    if temperature is not None:
-                        data['temperature'] = temperature
-                    if flow is not None:
-                        data['flow'] = flow
-                    
-                    # Keep None values as None for database (NULL values)
-                    # This allows graphs to show breaks instead of zeros
-                    
-                    
-                    
-                    if existing_id:
-                        # UPDATE existing record
-                        result = supabase.table('water_quality').update(data).eq('id', existing_id).execute()
-                        success_message = "✅ Data updated successfully!"
-                    else:
-                        # INSERT new record
-                        result = supabase.table('water_quality').insert(data).execute()
-                        success_message = "✅ Data saved successfully!"
-                        
-                    
-                    # Clear all caches and force complete refresh
-                    if hasattr(st, 'cache_data'):
-                        st.cache_data.clear()
-                    if hasattr(st, 'cache_resource'):
-                        st.cache_resource.clear()
-                    
-                    # Store success message in session state so it persists after rerun
-                    st.session_state['success_message'] = success_message
-                    st.success(success_message)
-                    
-                    # Clear form data to show empty form after submission
-                    st.session_state.pop('clicked_site', None)
-                    st.session_state.pop('clicked_date', None)
-                    st.session_state.pop('navigate_to_edit', None)
-                    
-                    # Clear form session state for fresh form
-                    form_keys = [
-                        'dissolved_oxygen_mg_input', 'dissolved_oxygen_sat_input', 
-                        'hardness_input', 'alkalinity_input', 'ph_input', 
-                        'temperature_input', 'flow_input'
-                    ]
-                    for key in form_keys:
-                        if key in st.session_state:
-                            del st.session_state[key]
-                    
-                    # Refresh the page to show updated data
-                    st.rerun()
-                    
-                except Exception as e:
-                    st.error(f"Error submitting data: {str(e)}")
+                
+                # Build payload but do not save yet; ask for confirmation
+                site_name_mapping = {
+                    'Blue River at Silverthorne Pavilion- 196': 'Site 1',
+                    'Snake River KSS- 52': 'Site 2',
+                    'Swan River Reach A- 1007': 'Site 3'
+                }
+                db_site_name = site_name_mapping.get(selected_site, selected_site)
+                data = {
+                    'site': db_site_name,
+                    'date': selected_date.strftime('%Y-%m-%d'),
+                    'user_id': st.session_state['user'].user.id,
+                    'notes': notes
+                }
+                if dissolved_oxygen_mg is not None:
+                    data['dissolved_oxygen_mg'] = dissolved_oxygen_mg
+                if dissolved_oxygen_sat is not None:
+                    data['dissolved_oxygen_sat'] = dissolved_oxygen_sat
+                if hardness is not None:
+                    data['hardness'] = hardness
+                if alkalinity is not None:
+                    data['alkalinity'] = alkalinity
+                if ph is not None:
+                    data['ph'] = ph
+                if temperature is not None:
+                    data['temperature'] = temperature
+                if flow is not None:
+                    data['flow'] = flow
+
+                st.session_state['pending_wq_save'] = {
+                    'data': data,
+                    'existing_id': existing_id,
+                    'selected_site': selected_site,
+                    'selected_date': selected_date.strftime('%m/%d/%Y')
+                }
+                st.info("Please confirm your changes below.")
+
+        # Confirmation UI for water quality changes
+        if st.session_state.get('pending_wq_save'):
+            pending = st.session_state['pending_wq_save']
+            with st.container():
+                st.warning("Confirm saving the following changes:")
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.write(f"Site: {pending['selected_site']}")
+                    st.write(f"Date: {pending['selected_date']}")
+                with col_b:
+                    st.write("Values:")
+                    for k, v in pending['data'].items():
+                        if k in ['site', 'date', 'user_id', 'notes']:
+                            continue
+                        st.write(f"- {k}: {v}")
+                    if pending['data'].get('notes'):
+                        st.write(f"- notes: {pending['data']['notes']}")
+
+                col_confirm, col_cancel = st.columns(2)
+                with col_confirm:
+                    if st.button("✅ Confirm Save", type="primary"):
+                        try:
+                            data = pending['data']
+                            existing_id_local = pending['existing_id']
+                            if existing_id_local:
+                                supabase.table('water_quality').update(data).eq('id', existing_id_local).execute()
+                                success_message = "✅ Data updated successfully!"
+                            else:
+                                supabase.table('water_quality').insert(data).execute()
+                                success_message = "✅ Data saved successfully!"
+
+                            if hasattr(st, 'cache_data'):
+                                st.cache_data.clear()
+                            if hasattr(st, 'cache_resource'):
+                                st.cache_resource.clear()
+                            st.session_state['charts_version'] = st.session_state.get('charts_version', 0) + 1
+                            st.session_state['success_message'] = success_message
+                            st.success(success_message)
+                        except Exception as e:
+                            st.error(f"Error submitting data: {str(e)}")
+                        finally:
+                            st.session_state.pop('pending_wq_save', None)
+                            st.rerun()
+                with col_cancel:
+                    if st.button("❌ Cancel"):
+                        st.session_state.pop('pending_wq_save', None)
+                        st.info("Changes canceled.")
     
     # Admin tab for data editing
     if is_user_admin:
