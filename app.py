@@ -830,7 +830,7 @@ def dashboard():
     col1, col2 = st.columns([1, 4])
     with col1:
         # Add BRWG logo
-        st.image("brwg logo.png", width=200)
+        st.image("brwg-logo.png", width=200)
     with col2:
         st.title("Water Quality Monitoring Dashboard")
     
@@ -1326,7 +1326,7 @@ if 'user' not in st.session_state:
     col1, col2, col3 = st.columns([1, 3, 1])
     with col1:
         # Add BRWG logo
-        st.image("brwg logo.png", width=200)
+        st.image("brwg-logo.png", width=200)
     with col2:
         st.title("Water Quality Monitoring Dashboard")
     with col3:
