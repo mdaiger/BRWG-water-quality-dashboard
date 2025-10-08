@@ -25,8 +25,8 @@ load_dotenv()
 # Initialize Supabase
 @st.cache_resource
 def init_supabase():
-    url = st.secrets.SUPABASE_URL
-    key = st.secrets.SUPABASE_KEY
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_KEY")
     return create_client(url, key)
 
 supabase = init_supabase()
@@ -648,6 +648,157 @@ def view_data():
         user_email = st.session_state['user'].user.email
         is_user_admin = is_admin(user_email)
     
+    # Fetch and display data
+    try:
+        response = supabase.table('water_quality').select("*").order('date').execute()
+        df = pd.DataFrame(response.data)
+        
+        if not df.empty:
+            # Convert date column to datetime
+            df['date'] = pd.to_datetime(df['date'])
+            
+            # Create abbreviated site names for legend using dynamic sites
+            sites = get_sites()
+            site_mapping = {full_name: short_name for full_name, short_name in sites}
+            # Add backward compatibility for old site names
+            site_mapping.update({
+                'Site 1': 'Blue River',
+                'Site 2': 'Snake River', 
+                'Site 3': 'Swan River'
+            })
+            df['site_abbrev'] = df['site'].map(site_mapping)
+            
+            # Define the parameters to plot
+            parameters = [
+                ('dissolved_oxygen_mg', 'Dissolved Oxygen (mg/L)'),
+                ('dissolved_oxygen_sat', 'Dissolved Oxygen (% saturation)'),
+                ('hardness', 'Hardness (mg/L CaCO3)'),
+                ('alkalinity', 'Alkalinity (mg/L CaCO3)'),
+                ('ph', 'pH (S.U.s)'),
+                ('temperature', 'Temperature (°C)'),
+                ('flow', 'Flow (cfs)')
+            ]
+            
+            # Create individual graphs for each parameter
+            for param_col, param_title in parameters:
+                if param_col in df.columns:
+                    # Show admin instruction above each graph
+                    if is_user_admin:
+                        st.write("🎯 Click any data point below to select it for editing")
+                    
+                    # Filter out null values for proper line breaks
+                    df_processed = df.copy()
+                    
+                    # Only convert zeros to NaN for parameters where zero is not meaningful
+                    zero_not_meaningful = param_col in ['dissolved_oxygen_mg', 'dissolved_oxygen_sat', 'hardness', 'alkalinity', 'ph']
+                    if zero_not_meaningful:
+                        for site in df['site'].unique():
+                            site_mask = df_processed['site'] == site
+                            site_data = df_processed[site_mask].copy()
+                            
+                            # Convert zeros to NaN for this site's data to create breaks
+                            site_data.loc[site_data[param_col] == 0, param_col] = float('nan')
+                            
+                            # Update the main dataframe
+                            df_processed.loc[site_mask, param_col] = site_data[param_col]
+                    
+                    # Define consistent colors for all sites
+                    color_map = {
+                        'Blue River': '#636EFA',  # Plotly default blue
+                        'Snake River': '#EF553B', # Plotly default red  
+                        'Swan River': '#00CC96'   # Plotly default green
+                    }
+                    
+                    # Create the plot with custom_data for click handling
+                    fig = px.line(
+                        df_processed, 
+                        x='date', 
+                        y=param_col, 
+                        color='site_abbrev',
+                        title=f'{param_title} - All Sites',
+                        labels={'date': 'Date', param_col: param_title, 'site_abbrev': 'Site'},
+                        custom_data=['site', 'id', 'date'],
+                        markers=True,
+                        color_discrete_map=color_map
+                    )
+                    
+                    fig.update_layout(
+                        height=400,
+                        xaxis=dict(tickformat='%m/%d/%Y'),
+                        hoverlabel=dict(
+                            bgcolor="white",
+                            bordercolor="black",
+                            font_size=12,
+                            font_family="Arial"
+                        )
+                    )
+                    
+                    # Update hover template
+                    fig.update_traces(
+                        hovertemplate="<b>%{fullData.name}</b><br>" +
+                                    "Date: %{x|%m/%d/%Y}<br>" +
+                                    f"{param_title}: %{{y}}<br>" +
+                                    "<extra></extra>"
+                    )
+                    
+                    # Show interactive charts for admin users, regular charts for volunteers
+                    if is_user_admin:
+                        # Use a simpler key that doesn't change
+                        clicked_points = plotly_events(
+                            fig,
+                            click_event=True,
+                            hover_event=False,
+                            select_event=False,
+                            key=f"plotly_{param_col}"
+                        )
+                        
+                        # Handle click events
+                        if clicked_points and len(clicked_points) > 0:
+                            point = clicked_points[0]
+                            point_index = point.get('pointIndex')
+                            curve_number = point.get('curveNumber', 0)
+                            
+                            # Get the actual data point from the processed dataframe
+                            # Filter by site first (curve_number corresponds to site)
+                            unique_sites = df_processed['site_abbrev'].unique()
+                            if curve_number < len(unique_sites):
+                                clicked_site_abbrev = unique_sites[curve_number]
+                                
+                                # Get data for this site
+                                site_data = df_processed[df_processed['site_abbrev'] == clicked_site_abbrev].reset_index(drop=True)
+                                
+                                if point_index < len(site_data):
+                                    clicked_row = site_data.iloc[point_index]
+                                    
+                                    # Store the clicked data point info
+                                    st.session_state['clicked_site'] = clicked_row['site']
+                                    st.session_state['clicked_date'] = clicked_row['date'].strftime('%m/%d/%Y')
+                                    st.session_state['clicked_id'] = clicked_row['id']
+                                    
+                                    # Show selection confirmation
+                                    site_name = site_mapping.get(clicked_row['site'], clicked_row['site'])
+                                    st.success(f"✅ Selected: {site_name} - {clicked_row['date'].strftime('%m/%d/%Y')} | Go to 'Add or Edit Data' tab to edit")
+                    else:
+                        # Show regular non-interactive chart for volunteers
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Add separation line after each graph
+                    st.markdown("---")
+        else:
+            st.info("No water quality data available.")
+            
+    except Exception as e:
+        st.error(f"Error fetching data: {str(e)}")
+        st.exception(e)  # Show full error for debugging    """Public data view for volunteers"""
+    st.header("Water Quality Metrics Over Time")
+    st.markdown("*Data collected by Citizen Scientists using CPW River Watch protocols*")
+    
+    # Check if user is admin for click functionality
+    is_user_admin = False
+    if 'user' in st.session_state:
+        user_email = st.session_state['user'].user.email
+        is_user_admin = is_admin(user_email)
+    
     
     # Fetch and display data
     try:
@@ -865,21 +1016,9 @@ def dashboard():
         st.header("Add or Edit Water Quality Data")
         
         # Show success message if it exists
-        if 'show_success' in st.session_state:
-            st.success(st.session_state['show_success'])
-            st.balloons()
-            # Clear the success message after showing it
-            del st.session_state['show_success']
-        
-        # Show data point selection message at the top
-        if st.session_state.get('navigate_to_edit', False):
-            st.success("🎯 Data point selected! Form pre-populated below for editing.")
-        
-        # Show success message if data was just submitted
         if st.session_state.get('data_submitted', False):
             st.success(st.session_state.get('success_message', ''))
             st.balloons()
-            # Clear the success flag after showing once
             st.session_state['data_submitted'] = False
             if 'success_message' in st.session_state:
                 del st.session_state['success_message']
@@ -888,62 +1027,64 @@ def dashboard():
         existing_data = None
         existing_id = None
         
-        # Get current selections to check for existing data
+        # Get current selections
         temp_sites = get_sites()
         temp_site_options = [full_name for full_name, short_name in temp_sites]
         
         # Handle navigation from clicked graph data point
         default_site_index = 0
-        default_date = None
+        default_date = datetime.today().date()
         
-        if st.session_state.get('navigate_to_edit', False):
-            clicked_site = st.session_state.get('clicked_site', '')
-            clicked_date = st.session_state.get('clicked_date', '')
+        # Check if we have a clicked data point
+        if st.session_state.get('clicked_id'):
+            st.info("📍 Data point selected from graph - loading for editing...")
             
-            # Find site index for clicked site - need exact match
-            site_name_mapping = {
-                'Site 1': 'Blue River at Silverthorne Pavilion- 196',
-                'Site 2': 'Snake River KSS- 52',
-                'Site 3': 'Swan River Reach A- 1007'
-            }
+            # Fetch the specific record by ID
+            try:
+                response = supabase.table('water_quality').select("*").eq('id', st.session_state['clicked_id']).execute()
+                if response.data and len(response.data) > 0:
+                    existing_data = response.data[0]
+                    existing_id = existing_data['id']
+                    
+                    # Map site name
+                    site_name_mapping = {
+                        'Site 1': 'Blue River at Silverthorne Pavilion- 196',
+                        'Site 2': 'Snake River KSS- 52',
+                        'Site 3': 'Swan River Reach A- 1007'
+                    }
+                    full_site_name = site_name_mapping.get(existing_data['site'], existing_data['site'])
+                    
+                    # Find site index
+                    for i, site_option in enumerate(temp_site_options):
+                        if full_site_name == site_option:
+                            default_site_index = i
+                            break
+                    
+                    # Set default date
+                    default_date = pd.to_datetime(existing_data['date']).date()
+                    
+                    st.success(f"✅ Editing: {site_name_mapping.get(existing_data['site'], existing_data['site'])} - {default_date.strftime('%m/%d/%Y')}")
+            except Exception as e:
+                st.error(f"Error loading selected data: {str(e)}")
             
-            # Get the full site name from the clicked site
-            full_site_name = site_name_mapping.get(clicked_site, clicked_site)
-            
-            for i, site_option in enumerate(temp_site_options):
-                if full_site_name == site_option:
-                    default_site_index = i
-                    break
-            
-            # Convert clicked date to date object
-            if clicked_date:
-                try:
-                    default_date = pd.to_datetime(clicked_date).date()
-                except:
-                    pass
-            
-            # Clear navigation flags
-            st.session_state['navigate_to_edit'] = False
+            # Clear the clicked session state after loading
+            if 'clicked_id' in st.session_state:
+                del st.session_state['clicked_id']
             if 'clicked_site' in st.session_state:
                 del st.session_state['clicked_site']
             if 'clicked_date' in st.session_state:
                 del st.session_state['clicked_date']
         
-        # Create temporary form to get site and date selections
-        with st.container():
-            col1, col2 = st.columns(2)
-            with col1:
-                selected_site = st.selectbox("Site", temp_site_options, index=default_site_index, key="temp_site_selection")
-            with col2:
-                # Default to today if no date was preselected
-                selected_date = st.date_input("Date", value=default_date or datetime.today().date(), format="MM/DD/YYYY", key="temp_date_input")
+        # Site and date selection
+        col1, col2 = st.columns(2)
+        with col1:
+            selected_site = st.selectbox("Site", temp_site_options, index=default_site_index, key="site_selection")
+        with col2:
+            selected_date = st.date_input("Date", value=default_date, format="MM/DD/YYYY", key="date_input")
         
-        # Fetch existing data for the selected site and date
-        existing_data = None
-        existing_id = None
-        if selected_site and selected_date:
+        # If we don't have existing_data yet, try to fetch based on site and date
+        if not existing_data and selected_site and selected_date:
             try:
-                # Map full site names to database site names
                 site_name_mapping = {
                     'Blue River at Silverthorne Pavilion- 196': 'Site 1',
                     'Snake River KSS- 52': 'Site 2',
@@ -951,258 +1092,314 @@ def dashboard():
                 }
                 db_site_name = site_name_mapping.get(selected_site, selected_site)
                 
-                response = supabase.table('water_quality').select("*").eq('site', db_site_name).eq('date', selected_date.strftime('%Y-%m-%d')).order('created_at', desc=True).execute()
-                if response.data:
-                    # For the EXACT same site and date, we should edit the existing record
-                    existing_data = response.data[0]  # Use most recent record for this exact site/date
+                response = supabase.table('water_quality').select("*").eq('site', db_site_name).eq('date', selected_date.strftime('%Y-%m-%d')).execute()
+                if response.data and len(response.data) > 0:
+                    existing_data = response.data[0]
                     existing_id = existing_data['id']
-                    
-                    # Debug: Show which record we're using
-                    if len(response.data) > 1:
-                        st.info(f"Found {len(response.data)} records for this site/date. Using most recent record (ID: {existing_id})")
+                    st.info("📝 Editing existing data entry")
                 else:
-                    # No existing record for this exact site/date combination
-                    existing_data = None
-                    existing_id = None
-                    
+                    st.info("➕ Creating new data entry")
             except Exception as e:
-                st.error(f"Error fetching existing data: {str(e)}")
+                st.error(f"Error checking for existing data: {str(e)}")
         
-        # Show status message
-        if existing_data:
-            st.info("📝 Editing existing data entry")
-        else:
-            st.info("➕ Creating new data entry")
-        
+        # Data entry form
         with st.form("water_quality_form"):
-            # Use the site and date from outside the form - no need to duplicate
-            site = selected_site
-            # Avoid shadowing datetime.date by not using the name 'date' here
-            
             col1, col2 = st.columns(2)
             
             with col1:
                 # Dissolved Oxygen (mg/L)
-                existing_do_mg = existing_data['dissolved_oxygen_mg'] if existing_data else None
+                existing_do_mg = existing_data.get('dissolved_oxygen_mg') if existing_data else None
                 col_input, col_checkbox = st.columns([3, 1])
                 with col_input:
-                    dissolved_oxygen_mg = st.number_input("Dissolved Oxygen (mg/L)", 
-                                                        value=float(existing_do_mg) if existing_do_mg is not None else 0.0, 
-                                                        format="%.2f", key="dissolved_oxygen_mg_input")
+                    dissolved_oxygen_mg = st.number_input(
+                        "Dissolved Oxygen (mg/L)", 
+                        value=float(existing_do_mg) if existing_do_mg is not None else 0.0, 
+                        format="%.2f"
+                    )
                 with col_checkbox:
                     st.markdown('<div style="margin-top: 25px; font-size: 0.8em;">', unsafe_allow_html=True)
-                    do_mg_not_available = st.checkbox("N/A", 
-                                                    value=False, key="do_mg_not_available",
-                                                    help="Check if no measurement was taken")
+                    do_mg_not_available = st.checkbox(
+                        "N/A", 
+                        value=existing_do_mg is None if existing_data else False,
+                        key="do_mg_na",
+                        help="Check if no measurement was taken"
+                    )
                     st.markdown('</div>', unsafe_allow_html=True)
+                
                 if do_mg_not_available:
                     dissolved_oxygen_mg = None
-                else:
-                    pass
                 
                 # Dissolved Oxygen (% saturation)
-                existing_do_sat = existing_data['dissolved_oxygen_sat'] if existing_data else None
+                existing_do_sat = existing_data.get('dissolved_oxygen_sat') if existing_data else None
                 col_input, col_checkbox = st.columns([3, 1])
                 with col_input:
-                    dissolved_oxygen_sat = st.number_input("Dissolved Oxygen (% saturation)", 
-                                                         min_value=0.0, max_value=200.0,
-                                                         value=float(existing_do_sat) if existing_do_sat is not None else 0.0, 
-                                                         format="%.1f", key="dissolved_oxygen_sat_input")
+                    dissolved_oxygen_sat = st.number_input(
+                        "Dissolved Oxygen (% saturation)", 
+                        min_value=0.0, 
+                        max_value=200.0,
+                        value=float(existing_do_sat) if existing_do_sat is not None else 0.0, 
+                        format="%.1f"
+                    )
                 with col_checkbox:
                     st.markdown('<div style="margin-top: 25px; font-size: 0.8em;">', unsafe_allow_html=True)
-                    do_sat_not_available = st.checkbox("N/A", 
-                                                     value=False, key="do_sat_not_available",
-                                                     help="Check if no measurement was taken")
+                    do_sat_not_available = st.checkbox(
+                        "N/A", 
+                        value=existing_do_sat is None if existing_data else False,
+                        key="do_sat_na",
+                        help="Check if no measurement was taken"
+                    )
                     st.markdown('</div>', unsafe_allow_html=True)
+                
                 if do_sat_not_available:
                     dissolved_oxygen_sat = None
                 
                 # Hardness
-                existing_hardness = existing_data['hardness'] if existing_data else None
+                existing_hardness = existing_data.get('hardness') if existing_data else None
                 col_input, col_checkbox = st.columns([3, 1])
-                
-                # Check N/A checkbox first
                 with col_checkbox:
                     st.markdown('<div style="margin-top: 25px; font-size: 0.8em;">', unsafe_allow_html=True)
-                    hardness_not_available = st.checkbox("N/A", 
-                                                        value=existing_hardness is None if existing_data else False, 
-                                                        key="hardness_not_available",
-                                                        help="Check if no measurement was taken")
+                    hardness_not_available = st.checkbox(
+                        "N/A", 
+                        value=existing_hardness is None if existing_data else False,
+                        key="hardness_na",
+                        help="Check if no measurement was taken"
+                    )
                     st.markdown('</div>', unsafe_allow_html=True)
                 
-                # Show input field or disabled field based on checkbox
                 with col_input:
                     if hardness_not_available:
-                        st.text_input("Hardness (mg/L CaCO3)", value="Data not available", disabled=True, key="hardness_disabled")
+                        st.text_input("Hardness (mg/L CaCO3)", value="Data not available", disabled=True)
                         hardness = None
                     else:
-                        hardness = st.number_input("Hardness (mg/L CaCO3)", 
-                                                 value=float(existing_hardness) if existing_hardness is not None else 0.0, 
-                                                 format="%.1f", key="hardness_input")
+                        hardness = st.number_input(
+                            "Hardness (mg/L CaCO3)", 
+                            value=float(existing_hardness) if existing_hardness is not None else 0.0, 
+                            format="%.1f"
+                        )
                 
                 # Alkalinity
-                existing_alkalinity = existing_data['alkalinity'] if existing_data else None
+                existing_alkalinity = existing_data.get('alkalinity') if existing_data else None
                 col_input, col_checkbox = st.columns([3, 1])
                 with col_input:
-                    alkalinity = st.number_input("Alkalinity (mg/L CaCO3)", 
-                                               value=float(existing_alkalinity) if existing_alkalinity is not None else 0.0, 
-                                               format="%.1f", key="alkalinity_input")
+                    alkalinity = st.number_input(
+                        "Alkalinity (mg/L CaCO3)", 
+                        value=float(existing_alkalinity) if existing_alkalinity is not None else 0.0, 
+                        format="%.1f"
+                    )
                 with col_checkbox:
                     st.markdown('<div style="margin-top: 25px; font-size: 0.8em;">', unsafe_allow_html=True)
-                    alkalinity_not_available = st.checkbox("N/A", 
-                                                          value=False, key="alkalinity_not_available",
-                                                          help="Check if no measurement was taken")
+                    alkalinity_not_available = st.checkbox(
+                        "N/A", 
+                        value=existing_alkalinity is None if existing_data else False,
+                        key="alkalinity_na",
+                        help="Check if no measurement was taken"
+                    )
                     st.markdown('</div>', unsafe_allow_html=True)
+                
                 if alkalinity_not_available:
                     alkalinity = None
-                
+            
             with col2:
                 # pH
-                existing_ph = existing_data['ph'] if existing_data else None
+                existing_ph = existing_data.get('ph') if existing_data else None
                 col_input, col_checkbox = st.columns([3, 1])
                 with col_input:
-                    ph = st.number_input("pH (S.U.s)", min_value=0.0, max_value=14.0,
-                                       value=float(existing_ph) if existing_ph is not None else 7.0, 
-                                       format="%.1f", key="ph_input")
+                    ph = st.number_input(
+                        "pH (S.U.s)", 
+                        min_value=0.0, 
+                        max_value=14.0,
+                        value=float(existing_ph) if existing_ph is not None else 7.0, 
+                        format="%.1f"
+                    )
                 with col_checkbox:
                     st.markdown('<div style="margin-top: 25px; font-size: 0.8em;">', unsafe_allow_html=True)
-                    ph_not_available = st.checkbox("N/A", 
-                                                  value=False, key="ph_not_available",
-                                                  help="Check if no measurement was taken")
+                    ph_not_available = st.checkbox(
+                        "N/A", 
+                        value=existing_ph is None if existing_data else False,
+                        key="ph_na",
+                        help="Check if no measurement was taken"
+                    )
                     st.markdown('</div>', unsafe_allow_html=True)
+                
                 if ph_not_available:
                     ph = None
                 
                 # Temperature
-                existing_temp = existing_data['temperature'] if existing_data else None
+                existing_temp = existing_data.get('temperature') if existing_data else None
                 col_input, col_checkbox = st.columns([3, 1])
-                with col_input:
-                    temperature = st.number_input("Temperature (°C)", 
-                                                value=float(existing_temp) if existing_temp is not None else 0.0, 
-                                                format="%.1f", key="temperature_input")
                 with col_checkbox:
                     st.markdown('<div style="margin-top: 25px; font-size: 0.8em;">', unsafe_allow_html=True)
-                    temp_not_available = st.checkbox("N/A", 
-                                                    value=False, key="temp_not_available",
-                                                    help="Check if no measurement was taken")
+                    temp_not_available = st.checkbox(
+                        "N/A", 
+                        value=existing_temp is None if existing_data else False,
+                        key="temp_na",
+                        help="Check if no measurement was taken"
+                    )
                     st.markdown('</div>', unsafe_allow_html=True)
-                if temp_not_available:
-                    temperature = None
+                
+                with col_input:
+                    if temp_not_available:
+                        st.text_input("Temperature (°C)", value="Data not available", disabled=True)
+                        temp = None
+                    else:
+                        temp = st.number_input(
+                            "Temperature (°C)", 
+                            value=float(existing_temp) if existing_temp is not None else 0.0, 
+                            format="%.1f"
+                        )
                 
                 # Flow
-                existing_flow = existing_data['flow'] if existing_data else None
+                existing_flow = existing_data.get('flow') if existing_data else None
                 col_input, col_checkbox = st.columns([3, 1])
                 with col_input:
-                    flow = st.number_input("Flow (cfs)", 
-                                         value=float(existing_flow) if existing_flow is not None else 0.0, 
-                                         format="%.2f", key="flow_input")
+                    flow = st.number_input(
+                        "Flow (cfs)", 
+                        value=float(existing_flow) if existing_flow is not None else 0.0, 
+                        format="%.2f"
+                    )
                 with col_checkbox:
                     st.markdown('<div style="margin-top: 25px; font-size: 0.8em;">', unsafe_allow_html=True)
-                    flow_not_available = st.checkbox("N/A", 
-                                                    value=False, key="flow_not_available",
-                                                    help="Check if no measurement was taken")
+                    flow_not_available = st.checkbox(
+                        "N/A", 
+                        value=existing_flow is None if existing_data else False,
+                        key="flow_na",
+                        help="Check if no measurement was taken"
+                    )
                     st.markdown('</div>', unsafe_allow_html=True)
+                
                 if flow_not_available:
                     flow = None
                 
-                # Notes (always available)
-                notes = st.text_area("Notes", 
-                                   value=existing_data['notes'] if existing_data and existing_data['notes'] else "", 
-                                   key="notes_input")
+                # Notes
+                notes = st.text_area(
+                    "Notes", 
+                    value=existing_data.get('notes', '') if existing_data else ""
+                )
             
-            # Change button text based on whether we're editing existing data
+            # Submit button
             button_text = "Update Data" if existing_data else "Submit Data"
             
             if st.form_submit_button(button_text):
-                # Validate that date is selected
                 if not selected_date:
                     st.error("Please select a date before submitting.")
-                    return
-                
-                # Build payload but do not save yet; ask for confirmation
-                site_name_mapping = {
-                    'Blue River at Silverthorne Pavilion- 196': 'Site 1',
-                    'Snake River KSS- 52': 'Site 2',
-                    'Swan River Reach A- 1007': 'Site 3'
-                }
-                db_site_name = site_name_mapping.get(selected_site, selected_site)
-                data = {
-                    'site': db_site_name,
-                    'date': selected_date.strftime('%Y-%m-%d'),
-                    'user_id': st.session_state['user'].user.id,
-                    'notes': notes
-                }
-                if dissolved_oxygen_mg is not None:
-                    data['dissolved_oxygen_mg'] = dissolved_oxygen_mg
-                if dissolved_oxygen_sat is not None:
-                    data['dissolved_oxygen_sat'] = dissolved_oxygen_sat
-                if hardness is not None:
-                    data['hardness'] = hardness
-                if alkalinity is not None:
-                    data['alkalinity'] = alkalinity
-                if ph is not None:
-                    data['ph'] = ph
-                if temperature is not None:
-                    data['temperature'] = temperature
-                if flow is not None:
-                    data['flow'] = flow
-
-                st.session_state['pending_wq_save'] = {
-                    'data': data,
-                    'existing_id': existing_id,
-                    'selected_site': selected_site,
-                    'selected_date': selected_date.strftime('%m/%d/%Y')
-                }
-                st.info("Please confirm your changes below.")
-
-        # Confirmation UI for water quality changes
+                else:
+                    # Build payload
+                    site_name_mapping = {
+                        'Blue River at Silverthorne Pavilion- 196': 'Site 1',
+                        'Snake River KSS- 52': 'Site 2',
+                        'Swan River Reach A- 1007': 'Site 3'
+                    }
+                    db_site_name = site_name_mapping.get(selected_site, selected_site)
+                    
+                    data = {
+                        'site': db_site_name,
+                        'date': selected_date.strftime('%Y-%m-%d'),
+                        'user_id': st.session_state['user'].user.id,
+                        'notes': notes if notes else None
+                    }
+                    
+                    # Add measurements (only if not N/A)
+                    if dissolved_oxygen_mg is not None:
+                        data['dissolved_oxygen_mg'] = dissolved_oxygen_mg
+                    else:
+                        data['dissolved_oxygen_mg'] = None
+                        
+                    if dissolved_oxygen_sat is not None:
+                        data['dissolved_oxygen_sat'] = dissolved_oxygen_sat
+                    else:
+                        data['dissolved_oxygen_sat'] = None
+                        
+                    if hardness is not None:
+                        data['hardness'] = hardness
+                    else:
+                        data['hardness'] = None
+                        
+                    if alkalinity is not None:
+                        data['alkalinity'] = alkalinity
+                    else:
+                        data['alkalinity'] = None
+                        
+                    if ph is not None:
+                        data['ph'] = ph
+                    else:
+                        data['ph'] = None
+                        
+                    if temp is not None:
+                        data['temperature'] = temp
+                    else:
+                        data['temperature'] = None
+                        
+                    if flow is not None:
+                        data['flow'] = flow
+                    else:
+                        data['flow'] = None
+                    
+                    # Store for confirmation
+                    st.session_state['pending_wq_save'] = {
+                        'data': data,
+                        'existing_id': existing_id,
+                        'selected_site': selected_site,
+                        'selected_date': selected_date.strftime('%m/%d/%Y')
+                    }
+                    st.rerun()
+        
+        # Confirmation UI
         if st.session_state.get('pending_wq_save'):
             pending = st.session_state['pending_wq_save']
-            with st.container():
-                st.warning("Confirm saving the following changes:")
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.write(f"Site: {pending['selected_site']}")
-                    st.write(f"Date: {pending['selected_date']}")
-                with col_b:
-                    st.write("Values:")
-                    for k, v in pending['data'].items():
-                        if k in ['site', 'date', 'user_id', 'notes']:
-                            continue
+            st.warning("⚠️ Confirm saving the following changes:")
+            
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.write(f"**Site:** {pending['selected_site']}")
+                st.write(f"**Date:** {pending['selected_date']}")
+            with col_b:
+                st.write("**Values:**")
+                for k, v in pending['data'].items():
+                    if k in ['site', 'date', 'user_id']:
+                        continue
+                    if k == 'notes' and v:
+                        st.write(f"- Notes: {v}")
+                    elif v is not None:
                         st.write(f"- {k}: {v}")
-                    if pending['data'].get('notes'):
-                        st.write(f"- notes: {pending['data']['notes']}")
-
-                col_confirm, col_cancel = st.columns(2)
-                with col_confirm:
-                    if st.button("✅ Confirm Save", type="primary"):
-                        try:
-                            data = pending['data']
-                            existing_id_local = pending['existing_id']
-                            if existing_id_local:
-                                supabase.table('water_quality').update(data).eq('id', existing_id_local).execute()
-                                success_message = "✅ Data updated successfully!"
-                            else:
-                                supabase.table('water_quality').insert(data).execute()
-                                success_message = "✅ Data saved successfully!"
-
-                            if hasattr(st, 'cache_data'):
-                                st.cache_data.clear()
-                            if hasattr(st, 'cache_resource'):
-                                st.cache_resource.clear()
-                            st.session_state['charts_version'] = st.session_state.get('charts_version', 0) + 1
-                            st.session_state['success_message'] = success_message
-                            st.success(success_message)
-                        except Exception as e:
-                            st.error(f"Error submitting data: {str(e)}")
-                        finally:
-                            st.session_state.pop('pending_wq_save', None)
-                            st.rerun()
-                with col_cancel:
-                    if st.button("❌ Cancel"):
+            
+            col_confirm, col_cancel = st.columns(2)
+            with col_confirm:
+                if st.button("✅ Confirm Save", type="primary"):
+                    try:
+                        data = pending['data']
+                        existing_id_local = pending['existing_id']
+                        
+                        if existing_id_local:
+                            # Update existing record
+                            supabase.table('water_quality').update(data).eq('id', existing_id_local).execute()
+                            success_message = "✅ Data updated successfully!"
+                        else:
+                            # Insert new record
+                            supabase.table('water_quality').insert(data).execute()
+                            success_message = "✅ Data saved successfully!"
+                        
+                        # Clear caches
+                        if hasattr(st, 'cache_data'):
+                            st.cache_data.clear()
+                        if hasattr(st, 'cache_resource'):
+                            st.cache_resource.clear()
+                        
+                        # Set success message and clear pending save
+                        st.session_state['success_message'] = success_message
+                        st.session_state['data_submitted'] = True
                         st.session_state.pop('pending_wq_save', None)
-                        st.info("Changes canceled.")
-    
+                        
+                        st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"Error submitting data: {str(e)}")
+                        st.exception(e)
+            
+            with col_cancel:
+                if st.button("❌ Cancel"):
+                    st.session_state.pop('pending_wq_save', None)
+                    st.rerun()
+
     # Admin tab for data editing
     if is_user_admin:
         with tab3:
