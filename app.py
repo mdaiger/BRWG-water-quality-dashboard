@@ -397,14 +397,20 @@ def manage_sites(is_user_admin):
         # Convert to the format expected by the UI
         sites_data = {}
         for site in sites_from_db:
+            # Null-safe parsing for coordinates
+            def _to_float(val):
+                try:
+                    return float(val)
+                except (TypeError, ValueError):
+                    return 0.0
             sites_data[site['full_name']] = {
-                'id': site['id'],
-                'site_number': site['site_number'],
-                'short_name': site['short_name'],
-                'latitude': float(site['latitude']),
-                'longitude': float(site['longitude']),
-                'elevation': site['elevation'],
-                'description': site['description']
+                'id': site.get('id'),
+                'site_number': site.get('site_number'),
+                'short_name': site.get('short_name'),
+                'latitude': _to_float(site.get('latitude')),
+                'longitude': _to_float(site.get('longitude')),
+                'elevation': site.get('elevation'),
+                'description': site.get('description')
             }
     except Exception as e:
         st.error(f"Error loading sites from database: {str(e)}")
@@ -667,6 +673,8 @@ def view_data():
                 'Site 3': 'Swan River'
             })
             df['site_abbrev'] = df['site'].map(site_mapping)
+            # Fallback: if a site value isn't in mapping, use the original site string
+            df['site_abbrev'] = df['site_abbrev'].fillna(df['site'].astype(str))
             
             # Define the parameters to plot
             parameters = [
@@ -688,6 +696,8 @@ def view_data():
                     
                     # Filter out null values for proper line breaks
                     df_processed = df.copy()
+                    # Ensure numeric dtype for column (coerce bad values to NaN)
+                    df_processed[param_col] = pd.to_numeric(df_processed[param_col], errors='coerce')
                     
                     # Only convert zeros to NaN for parameters where zero is not meaningful
                     zero_not_meaningful = param_col in ['dissolved_oxygen_mg', 'dissolved_oxygen_sat', 'hardness', 'alkalinity', 'ph']
@@ -702,6 +712,17 @@ def view_data():
                             # Update the main dataframe
                             df_processed.loc[site_mask, param_col] = site_data[param_col]
                     
+                    # After cleanup, aggregate to one row per site/date to avoid duplicates
+                    df_param = df_processed[[
+                        'date', 'site', 'site_abbrev', param_col, 'id'
+                    ]].copy()
+                    df_param = df_param.sort_values('date')
+                    df_param = (
+                        df_param
+                        .groupby(['site', 'site_abbrev', 'date'], as_index=False)
+                        .agg({param_col: 'first', 'id': 'first'})
+                    )
+
                     # Define consistent colors for all sites
                     color_map = {
                         'Blue River': '#636EFA',  # Plotly default blue
@@ -711,7 +732,7 @@ def view_data():
                     
                     # Create the plot with custom_data for click handling
                     fig = px.line(
-                        df_processed, 
+                        df_param, 
                         x='date', 
                         y=param_col, 
                         color='site_abbrev',
@@ -719,7 +740,8 @@ def view_data():
                         labels={'date': 'Date', param_col: param_title, 'site_abbrev': 'Site'},
                         custom_data=['site', 'id', 'date'],
                         markers=True,
-                        color_discrete_map=color_map
+                        color_discrete_map=color_map,
+                        category_orders={'site_abbrev': ['Blue River', 'Snake River', 'Swan River']}
                     )
                     
                     fig.update_layout(
@@ -735,6 +757,7 @@ def view_data():
                     
                     # Update hover template
                     fig.update_traces(
+                        connectgaps=False,
                         hovertemplate="<b>%{fullData.name}</b><br>" +
                                     "Date: %{x|%m/%d/%Y}<br>" +
                                     f"{param_title}: %{{y}}<br>" +
@@ -789,191 +812,7 @@ def view_data():
             
     except Exception as e:
         st.error(f"Error fetching data: {str(e)}")
-        st.exception(e)  # Show full error for debugging    """Public data view for volunteers"""
-    st.header("Water Quality Metrics Over Time")
-    st.markdown("*Data collected by Citizen Scientists using CPW River Watch protocols*")
-    
-    # Check if user is admin for click functionality
-    is_user_admin = False
-    if 'user' in st.session_state:
-        user_email = st.session_state['user'].user.email
-        is_user_admin = is_admin(user_email)
-    
-    
-    # Fetch and display data
-    try:
-        response = supabase.table('water_quality').select("*").order('date').execute()
-        df = pd.DataFrame(response.data)
-        
-        
-        if not df.empty:
-            # Convert date column to datetime
-            df['date'] = pd.to_datetime(df['date'])
-            # Versioning for chart widgets to force remount on data changes
-            charts_version = st.session_state.get('charts_version', 0)
-            try:
-                latest_date = str(df['date'].max())
-            except Exception:
-                latest_date = ""
-            data_version = f"{len(df)}_{latest_date}_{charts_version}"
-            
-            # Create abbreviated site names for legend using dynamic sites
-            sites = get_sites()
-            site_mapping = {full_name: short_name for full_name, short_name in sites}
-            # Add backward compatibility for old site names
-            site_mapping.update({
-                'Site 1': 'Blue River',
-                'Site 2': 'Snake River', 
-                'Site 3': 'Swan River'
-            })
-            df['site_abbrev'] = df['site'].map(site_mapping)
-            
-            
-            # Define the parameters to plot
-            parameters = [
-                ('dissolved_oxygen_mg', 'Dissolved Oxygen (mg/L)'),
-                ('dissolved_oxygen_sat', 'Dissolved Oxygen (% saturation)'),
-                ('hardness', 'Hardness (mg/L CaCO3)'),
-                ('alkalinity', 'Alkalinity (mg/L CaCO3)'),
-                ('ph', 'pH (S.U.s)'),
-                ('temperature', 'Temperature (°C)'),
-                ('flow', 'Flow (cfs)')
-            ]
-            
-            # Create individual graphs for each parameter
-            for param_col, param_title in parameters:
-                if param_col in df.columns:
-                    # Show admin instruction above each graph
-                    if is_user_admin:
-                        st.write("🎯 Click any data point to select it for editing")
-                    
-                    # Filter out null values for proper line breaks
-                    df_processed = df.copy()
-                    
-                    # Process data site by site to handle nulls properly
-                    # Only convert zeros to NaN for parameters where zero is not meaningful
-                    zero_not_meaningful = param_col in ['dissolved_oxygen_mg', 'dissolved_oxygen_sat', 'hardness', 'alkalinity', 'ph']
-                    if zero_not_meaningful:
-                        for site in df['site'].unique():
-                            site_mask = df_processed['site'] == site
-                            site_data = df_processed[site_mask].copy()
-                            
-                            # Convert zeros to NaN for this site's data to create breaks
-                            site_data.loc[site_data[param_col] == 0, param_col] = float('nan')
-                            
-                            # Update the main dataframe
-                            df_processed.loc[site_mask, param_col] = site_data[param_col]
-                    
-                    # Define consistent colors for all sites
-                    color_map = {
-                        'Blue River': '#636EFA',  # Plotly default blue
-                        'Snake River': '#EF553B', # Plotly default red  
-                        'Swan River': '#00CC96'   # Plotly default green
-                    }
-                    
-                    
-                    # Create the plot
-                    with st.spinner('Loading chart...'):
-                        fig = px.line(
-                            df_processed, x='date', y=param_col, color='site_abbrev',
-                            title=f'{param_title} - All Sites',
-                            labels={'date': 'Date', param_col: param_title, 'site_abbrev': 'Site'},
-                            custom_data=['site', 'id'] if is_user_admin else None,
-                            markers=True,
-                            color_discrete_map=color_map
-                        )
-                
-                fig.update_layout(
-                    height=400,
-                    xaxis=dict(tickformat='%m/%d/%Y'),
-                    hoverlabel=dict(
-                        bgcolor="white",
-                        bordercolor="black",
-                        font_size=12,
-                        font_family="Arial"
-                    )
-                )
-                
-                # Add hover template for admin users
-                if is_user_admin:
-                    fig.update_traces(
-                        hovertemplate="<b>%{fullData.name}</b><br>" +
-                                    "Date: %{x}<br>" +
-                                    f"{param_title}: %{{y}}<br>" +
-                                    "<extra></extra>"
-                    )
-                
-                # Show interactive charts for admin users, regular charts for volunteers
-                if is_user_admin:
-                    clicked_points = plotly_events(
-                        fig,
-                        click_event=True,
-                        hover_event=True,
-                        select_event=False,
-                        key=f"plotly_{param_col}_{data_version}"
-                    )
-                    
-                    # Handle click events - store data but don't auto-navigate
-                    if clicked_points:
-                        point_data = clicked_points[0]
-                        
-                        # Get the date and curve info from click event
-                        clicked_date_raw = point_data['x']
-                        clicked_date = pd.to_datetime(clicked_date_raw).strftime('%m/%d/%Y')
-                        curve_number = point_data.get('curveNumber', 0)
-                        
-                        # Since plotly's click detection is fundamentally broken, 
-                        # let's create a simple user selection interface
-                        clicked_date_dt = pd.to_datetime(clicked_date_raw)
-                        
-                        # Find all data points on this exact date
-                        date_matches = df_processed[df_processed['date'] == clicked_date_dt]
-                        
-                        if len(date_matches) > 1:
-                            # Multiple sites have data on this date - ask user to clarify
-                            st.warning("⚠️ Multiple sites have data on this date. Please select which site you'd like to edit:")
-                            
-                            for _, row in date_matches.iterrows():
-                                site_name = site_mapping.get(row['site'], row['site'])
-                                if st.button(f"📍 {site_name} - {row[param_col]} {param_title.split('(')[-1].replace(')', '')}", 
-                                           key=f"select_{row['site']}_{clicked_date}_{param_col}"):
-                                    st.session_state['clicked_site'] = row['site']
-                                    st.session_state['clicked_date'] = clicked_date
-                                    st.session_state['navigate_to_edit'] = True
-                                    st.rerun()
-                            
-                            # Don't auto-select anything - let user choose
-                            clicked_site = None
-                        elif len(date_matches) == 1:
-                            # Only one site has data on this date
-                            clicked_site = date_matches.iloc[0]['site']
-                        else:
-                            # No data found for this date
-                            clicked_site = df_processed.iloc[0]['site']
-                        
-                        # Only store in session state if we have a valid site selection
-                        if clicked_site:
-                            st.session_state['clicked_site'] = clicked_site
-                            st.session_state['clicked_date'] = clicked_date
-                            st.session_state['navigate_to_edit'] = True
-                    
-                    # Show selection info for any selected data
-                    if st.session_state.get('clicked_site') and st.session_state.get('clicked_date'):
-                        site_name = site_mapping.get(st.session_state['clicked_site'], st.session_state['clicked_site'])
-                        st.info(f"✅ **Selected:** {site_name} - {st.session_state['clicked_date']} | Go to 'Add or Edit Data' tab to edit this entry")
-                else:
-                    # Show regular non-interactive chart for volunteers
-                    st.plotly_chart(fig, use_container_width=True)
-                
-                # Add separation line after each graph
-                st.write("---")
-                
-        
-        else:
-            st.info("No water quality data available.")
-            
-    except Exception as e:
-        st.error(f"Error fetching data: {str(e)}")
+        st.exception(e)  # Show full error for debugging
 
 def dashboard():
     """Main dashboard view for authenticated users"""
