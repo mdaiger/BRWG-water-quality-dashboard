@@ -696,8 +696,8 @@ def view_data():
                     
                     # Filter out null values for proper line breaks
                     df_processed = df.copy()
-                    # Ensure numeric dtype for column (coerce bad values to NaN)
-                    df_processed[param_col] = pd.to_numeric(df_processed[param_col], errors='coerce')
+                    # Ensure numeric dtype for column (coerce bad values to NaN) into a dedicated y column
+                    df_processed['__y__'] = pd.to_numeric(df_processed[param_col], errors='coerce').astype(float)
                     
                     # Only convert zeros to NaN for parameters where zero is not meaningful
                     zero_not_meaningful = param_col in ['dissolved_oxygen_mg', 'dissolved_oxygen_sat', 'hardness', 'alkalinity', 'ph']
@@ -707,10 +707,10 @@ def view_data():
                             site_data = df_processed[site_mask].copy()
                             
                             # Convert zeros to NaN for this site's data to create breaks
-                            site_data.loc[site_data[param_col] == 0, param_col] = float('nan')
+                            site_data.loc[site_data['__y__'] == 0, '__y__'] = float('nan')
                             
                             # Update the main dataframe
-                            df_processed.loc[site_mask, param_col] = site_data[param_col]
+                            df_processed.loc[site_mask, '__y__'] = site_data['__y__']
                     
                     # Sort for stable rendering
                     df_processed = df_processed.sort_values(['site_abbrev', 'date'])
@@ -726,10 +726,10 @@ def view_data():
                     fig = px.line(
                         df_processed, 
                         x='date', 
-                        y=param_col, 
+                        y='__y__', 
                         color='site_abbrev',
                         title=f'{param_title} - All Sites',
-                        labels={'date': 'Date', param_col: param_title, 'site_abbrev': 'Site'},
+                        labels={'date': 'Date', '__y__': param_title, 'site_abbrev': 'Site'},
                         custom_data=['site', 'id', 'date'],
                         markers=True,
                         color_discrete_map=color_map,
