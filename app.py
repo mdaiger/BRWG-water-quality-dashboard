@@ -122,7 +122,7 @@ def get_sites():
 def edit_data():
     """Admin interface for editing existing data"""
     
-    st.info("💡 Click a data entry to edit or delete")
+    st.info("💡 Expand an entry and click Edit to modify, or Delete to remove.")
     
     try:
         # Fetch all data with ID for editing
@@ -145,7 +145,7 @@ def edit_data():
             
             st.subheader("Existing Data Entries")
             
-            # Display data in a table with edit buttons
+            # Display data in a table with edit/delete actions
             for idx, row in df.iterrows():
                 with st.expander(f"{row['site_display']} - {row['date']} (ID: {row['id']})"):
                     col1, col2 = st.columns([3, 1])
@@ -164,26 +164,34 @@ def edit_data():
                     
                     with col2:
                         if st.button("Edit", key=f"edit_data_{row['id']}"):
-                            st.session_state[f'editing_data_{row["id"]}'] = True
+                            st.session_state['editing_entry_id'] = row['id']
                             st.rerun()
                         
                         if st.button("Delete", key=f"delete_data_{row['id']}"):
-                            if st.session_state.get(f'confirm_delete_{row["id"]}', False):
-                                # Delete the record
-                                supabase.table('water_quality').delete().eq('id', row['id']).execute()
-                                st.success("Data deleted!")
-                                st.rerun()
-                            else:
-                                st.session_state[f'confirm_delete_{row["id"]}'] = True
-                                st.warning("Click Delete again to confirm")
-                                st.rerun()
+                            st.session_state['pending_delete_id'] = row['id']
+                            st.rerun()
+                        
+                        # Inline delete confirmation
+                        if st.session_state.get('pending_delete_id') == row['id']:
+                            st.warning("Confirm delete?")
+                            col_ok, col_cancel = st.columns(2)
+                            with col_ok:
+                                if st.button("✅ Yes, delete", key=f"confirm_del_{row['id']}"):
+                                    supabase.table('water_quality').delete().eq('id', row['id']).execute()
+                                    st.success("Data deleted!")
+                                    st.session_state.pop('pending_delete_id', None)
+                                    st.rerun()
+                            with col_cancel:
+                                if st.button("❌ Cancel", key=f"cancel_del_{row['id']}"):
+                                    st.session_state.pop('pending_delete_id', None)
+                                    st.rerun()
             
-            # Edit forms for each data entry
-            for idx, row in df.iterrows():
-                if st.session_state.get(f'editing_data_{row["id"]}', False):
-                    st.subheader(f"Edit Entry: {row['site_display']} - {row['date']}")
-                    
-                    with st.form(f"edit_form_{row['id']}"):
+            # Single edit form for the selected entry
+            if st.session_state.get('editing_entry_id'):
+                row = df[df['id'] == st.session_state['editing_entry_id']].iloc[0]
+                st.subheader(f"Edit Entry: {row['site_display']} - {row['date']}")
+
+                with st.form(f"edit_form_{row['id']}"):
                         # Site selection
                         sites = get_sites()
                         site_options = [full_name for full_name, short_name in sites]
@@ -364,7 +372,7 @@ def edit_data():
                                 
                                 supabase.table('water_quality').update(update_data).eq('id', row['id']).execute()
                                 st.success("Data updated successfully!")
-                                st.session_state[f'editing_data_{row["id"]}'] = False
+                                st.session_state.pop('editing_entry_id', None)
                                 
                                 # Clear cache so graphs update
                                 if hasattr(st, 'cache_data'):
@@ -376,7 +384,7 @@ def edit_data():
                         
                         with col2:
                             if st.form_submit_button("❌ Cancel"):
-                                st.session_state[f'editing_data_{row["id"]}'] = False
+                                st.session_state.pop('editing_entry_id', None)
                                 st.rerun()
         
         else:
@@ -694,8 +702,8 @@ def view_data():
             for param_col, param_title in parameters:
                 if param_col in df.columns:
                     # Show admin instruction above each graph
-                    if is_user_admin:
-                        st.write("🎯 Click any data point below to select it for editing")
+                    # if is_user_admin:
+                    #     st.write("🎯 Click any data point below to select it for editing")
                     
                     # Filter out null values for proper line breaks
                     df_processed = df.copy()
@@ -795,7 +803,7 @@ def view_data():
                     # Render chart and provide admin tools
                     st.plotly_chart(fig, width='stretch')
                     if is_user_admin:
-                        # Admin-only: provide the exact plotted data download and a selector UI
+                        # Admin-only: provide the exact plotted data download
                         export_cols = ['date', 'site', 'site_abbrev', '__y__', 'id']
                         csv_bytes = df_dedup[export_cols].to_csv(index=False).encode('utf-8')
                         with st.expander(f"Download plotted data for {param_title}", expanded=False):
@@ -807,20 +815,6 @@ def view_data():
                             )
                             st.caption("Preview of plotted rows:")
                             st.dataframe(df_dedup[export_cols].head(12))
-                        with st.expander(f"Select a record to edit for {param_title}", expanded=False):
-                            options = (
-                                df_dedup[['site_abbrev','site','date','id','__y__']]
-                                .sort_values(['site_abbrev','date'])
-                            )
-                            for _, r in options.iterrows():
-                                site_name = site_mapping.get(r['site'], r['site'])
-                                label = f"{site_name} — {r['date'].strftime('%m/%d/%Y')} — value: {r['__y__']}"
-                                if st.button(label, key=f"pick_{param_col}_{r['id']}"):
-                                    st.session_state['clicked_id'] = r['id']
-                                    st.session_state['clicked_site'] = r['site']
-                                    st.session_state['clicked_date'] = r['date'].strftime('%m/%d/%Y')
-                                    st.success("Record selected. Go to 'Add or Edit Data'.")
-                                    st.rerun()
                     
                     # Add separation line after each graph
                     st.markdown("---")
@@ -883,80 +877,71 @@ def dashboard():
         existing_data = None
         existing_id = None
         
-        # Get current selections
+        # Sites list
         temp_sites = get_sites()
         temp_site_options = [full_name for full_name, short_name in temp_sites]
+        site_name_mapping = {
+            'Blue River at Silverthorne Pavilion- 196': 'Site 1',
+            'Snake River KSS- 52': 'Site 2',
+            'Swan River Reach A- 1007': 'Site 3'
+        }
+        reverse_site_mapping = {v: k for k, v in site_name_mapping.items()}
+
+        # Mode toggle: Edit existing or Add new
+        mode = st.radio("Mode", ["Edit existing", "Add new"], horizontal=True)
         
-        # Handle navigation from clicked graph data point
-        default_site_index = 0
-        default_date = datetime.today().date()
-        
-        # Check if we have a clicked data point
-        if st.session_state.get('clicked_id'):
-            st.info("📍 Data point selected from graph - loading for editing...")
-            
-            # Fetch the specific record by ID
-            try:
-                response = supabase.table('water_quality').select("*").eq('id', st.session_state['clicked_id']).execute()
-                if response.data and len(response.data) > 0:
-                    existing_data = response.data[0]
-                    existing_id = existing_data['id']
-                    
-                    # Map site name
-                    site_name_mapping = {
-                        'Site 1': 'Blue River at Silverthorne Pavilion- 196',
-                        'Site 2': 'Snake River KSS- 52',
-                        'Site 3': 'Swan River Reach A- 1007'
-                    }
-                    full_site_name = site_name_mapping.get(existing_data['site'], existing_data['site'])
-                    
-                    # Find site index
-                    for i, site_option in enumerate(temp_site_options):
-                        if full_site_name == site_option:
-                            default_site_index = i
-                            break
-                    
-                    # Set default date
-                    default_date = pd.to_datetime(existing_data['date']).date()
-                    
-                    st.success(f"✅ Editing: {site_name_mapping.get(existing_data['site'], existing_data['site'])} - {default_date.strftime('%m/%d/%Y')}")
-            except Exception as e:
-                st.error(f"Error loading selected data: {str(e)}")
-            
-            # Clear the clicked session state after loading
-            if 'clicked_id' in st.session_state:
-                del st.session_state['clicked_id']
-            if 'clicked_site' in st.session_state:
-                del st.session_state['clicked_site']
-            if 'clicked_date' in st.session_state:
-                del st.session_state['clicked_date']
-        
-        # Site and date selection
-        col1, col2 = st.columns(2)
-        with col1:
-            selected_site = st.selectbox("Site", temp_site_options, index=default_site_index, key="site_selection")
-        with col2:
-            selected_date = st.date_input("Date", value=default_date, format="MM/DD/YYYY", key="date_input")
-        
-        # If we don't have existing_data yet, try to fetch based on site and date
-        if not existing_data and selected_site and selected_date:
-            try:
-                site_name_mapping = {
-                    'Blue River at Silverthorne Pavilion- 196': 'Site 1',
-                    'Snake River KSS- 52': 'Site 2',
-                    'Swan River Reach A- 1007': 'Site 3'
-                }
-                db_site_name = site_name_mapping.get(selected_site, selected_site)
-                
-                response = supabase.table('water_quality').select("*").eq('site', db_site_name).eq('date', selected_date.strftime('%Y-%m-%d')).execute()
-                if response.data and len(response.data) > 0:
-                    existing_data = response.data[0]
-                    existing_id = existing_data['id']
-                    st.info("📝 Editing existing data entry")
+        if mode == "Edit existing":
+            col1, col2 = st.columns(2)
+            with col1:
+                selected_site = st.selectbox("Site", temp_site_options, key="edit_site_selection")
+            with col2:
+                # Fetch distinct dates with data for this site
+                try:
+                    db_site = site_name_mapping.get(selected_site, selected_site)
+                    resp = supabase.table('water_quality').select("id,date").eq('site', db_site).order('date').execute()
+                    date_rows = resp.data or []
+                except Exception as e:
+                    date_rows = []
+                    st.error(f"Error loading dates: {str(e)}")
+                # Build options: label -> id
+                options = []
+                for r in date_rows:
+                    try:
+                        label = pd.to_datetime(r['date']).strftime('%m/%d/%Y')
+                    except Exception:
+                        label = str(r['date'])
+                    options.append((label, r['id']))
+                if options:
+                    labels = [a for a, _ in options]
+                    chosen_label = st.selectbox("Date (has data)", labels, key="edit_date_selection")
+                    chosen_id = dict(options)[chosen_label]
+                    # Load record by id
+                    try:
+                        rec = supabase.table('water_quality').select("*").eq('id', chosen_id).execute()
+                        if rec.data:
+                            existing_data = rec.data[0]
+                            existing_id = existing_data['id']
+                            st.info("📝 Editing existing data entry")
+                            # Ensure selected_date is populated for the form submission logic
+                            try:
+                                selected_date = pd.to_datetime(existing_data['date']).date()
+                            except Exception:
+                                selected_date = datetime.today().date()
+                    except Exception as e:
+                        st.error(f"Error loading record: {str(e)}")
                 else:
-                    st.info("➕ Creating new data entry")
-            except Exception as e:
-                st.error(f"Error checking for existing data: {str(e)}")
+                    st.info("No existing data for this site yet.")
+        else:
+            # Add new entry flow
+            col1, col2 = st.columns(2)
+            with col1:
+                selected_site = st.selectbox("Site", temp_site_options, key="add_site_selection")
+            with col2:
+                default_date = datetime.today().date()
+                selected_date = st.date_input("Date", value=default_date, format="MM/DD/YYYY", key="add_date_input")
+            # Prepare empty existing_data to allow form to render
+            existing_data = None
+            existing_id = None
         
         # Data entry form
         with st.form("water_quality_form"):
