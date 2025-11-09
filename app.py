@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
@@ -758,6 +759,16 @@ def view_data():
                     
                     # Show interactive charts for admin users, regular charts for volunteers
                     if is_user_admin:
+                        # Admin-only: provide the exact plotted data download for debugging
+                        export_cols = ['date', 'site', 'site_abbrev', '__y__', 'id']
+                        csv_bytes = df_processed[export_cols].to_csv(index=False).encode('utf-8')
+                        with st.expander(f"Download plotted data for {param_title}", expanded=False):
+                            st.download_button(
+                                label="Download CSV",
+                                data=csv_bytes,
+                                file_name=f"plotted_{param_col}.csv",
+                                mime="text/csv"
+                            )
                         # Use a simpler key that doesn't change
                         clicked_points = plotly_events(
                             fig,
@@ -795,7 +806,7 @@ def view_data():
                                     st.success(f"✅ Selected: {site_name} - {clicked_row['date'].strftime('%m/%d/%Y')} | Go to 'Add or Edit Data' tab to edit")
                     else:
                         # Show regular non-interactive chart for volunteers
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width='stretch')
                     
                     # Add separation line after each graph
                     st.markdown("---")
