@@ -722,6 +722,13 @@ def view_data():
                         .groupby(['site', 'site_abbrev', 'date'], as_index=False)
                         .agg({param_col: 'first', 'id': 'first'})
                     )
+                    # Ensure y values are strictly numeric after aggregation
+                    df_param[param_col] = pd.to_numeric(df_param[param_col], errors='coerce')
+                    
+                    # Optional: small admin-only debug peek (collapsed)
+                    if is_user_admin:
+                        with st.expander(f"Debug: data used for {param_title}", expanded=False):
+                            st.dataframe(df_param.head(10))
 
                     # Define consistent colors for all sites
                     color_map = {
