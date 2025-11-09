@@ -713,8 +713,21 @@ def view_data():
                             # Update the main dataframe
                             df_processed.loc[site_mask, '__y__'] = site_data['__y__']
                     
+                    # Convert created_at if present and deduplicate by site/date using latest record
+                    if 'created_at' in df_processed.columns:
+                        try:
+                            df_processed['created_at'] = pd.to_datetime(df_processed['created_at'], errors='coerce')
+                        except Exception:
+                            pass
+                        # Sort so that the last occurrence per (site,date) is the most recent
+                        df_dedup = df_processed.sort_values(['site', 'date', 'created_at'])
+                        df_dedup = df_dedup.drop_duplicates(subset=['site', 'date'], keep='last')
+                    else:
+                        # Fallback: keep first occurrence to avoid duplicate vertical stacks
+                        df_dedup = df_processed.sort_values(['site', 'date']).drop_duplicates(subset=['site', 'date'], keep='first')
+                    
                     # Sort for stable rendering
-                    df_processed = df_processed.sort_values(['site_abbrev', 'date'])
+                    df_dedup = df_dedup.sort_values(['site_abbrev', 'date'])
 
                     # Define consistent colors for all sites
                     color_map = {
@@ -725,7 +738,7 @@ def view_data():
                     
                     # Create the plot with custom_data for click handling
                     fig = px.line(
-                        df_processed, 
+                        df_dedup, 
                         x='date', 
                         y='__y__', 
                         color='site_abbrev',
@@ -786,12 +799,12 @@ def view_data():
                             
                             # Get the actual data point from the processed dataframe
                             # Filter by site first (curve_number corresponds to site)
-                            unique_sites = df_processed['site_abbrev'].unique()
+                            unique_sites = df_dedup['site_abbrev'].unique()
                             if curve_number < len(unique_sites):
                                 clicked_site_abbrev = unique_sites[curve_number]
                                 
                                 # Get data for this site
-                                site_data = df_processed[df_processed['site_abbrev'] == clicked_site_abbrev].reset_index(drop=True)
+                                site_data = df_dedup[df_dedup['site_abbrev'] == clicked_site_abbrev].reset_index(drop=True)
                                 
                                 if point_index < len(site_data):
                                     clicked_row = site_data.iloc[point_index]
@@ -799,7 +812,19 @@ def view_data():
                                     # Store the clicked data point info
                                     st.session_state['clicked_site'] = clicked_row['site']
                                     st.session_state['clicked_date'] = clicked_row['date'].strftime('%m/%d/%Y')
-                                    st.session_state['clicked_id'] = clicked_row['id']
+                                    # If duplicates exist for this site/date, offer choice
+                                    duplicates = df[(df['site'] == clicked_row['site']) & (df['date'] == clicked_row['date'])]
+                                    if len(duplicates) > 1:
+                                        st.warning("Multiple records exist for this site and date. Select one to edit:")
+                                        for _, r in duplicates.iterrows():
+                                            label_val = r.get(param_col)
+                                            btn_key = f"pick_{param_col}_{r['id']}"
+                                            if st.button(f"Choose ID {r['id'][:8]}… ({param_title}: {label_val})", key=btn_key):
+                                                st.session_state['clicked_id'] = r['id']
+                                                st.success("Record selected.")
+                                                st.rerun()
+                                    else:
+                                        st.session_state['clicked_id'] = clicked_row['id']
                                     
                                     # Show selection confirmation
                                     site_name = site_mapping.get(clicked_row['site'], clicked_row['site'])
