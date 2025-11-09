@@ -712,23 +712,8 @@ def view_data():
                             # Update the main dataframe
                             df_processed.loc[site_mask, param_col] = site_data[param_col]
                     
-                    # After cleanup, aggregate to one row per site/date to avoid duplicates
-                    df_param = df_processed[[
-                        'date', 'site', 'site_abbrev', param_col, 'id'
-                    ]].copy()
-                    df_param = df_param.sort_values('date')
-                    df_param = (
-                        df_param
-                        .groupby(['site', 'site_abbrev', 'date'], as_index=False)
-                        .agg({param_col: 'first', 'id': 'first'})
-                    )
-                    # Ensure y values are strictly numeric after aggregation
-                    df_param[param_col] = pd.to_numeric(df_param[param_col], errors='coerce')
-                    
-                    # Optional: small admin-only debug peek (collapsed)
-                    if is_user_admin:
-                        with st.expander(f"Debug: data used for {param_title}", expanded=False):
-                            st.dataframe(df_param.head(10))
+                    # Sort for stable rendering
+                    df_processed = df_processed.sort_values(['site_abbrev', 'date'])
 
                     # Define consistent colors for all sites
                     color_map = {
@@ -739,7 +724,7 @@ def view_data():
                     
                     # Create the plot with custom_data for click handling
                     fig = px.line(
-                        df_param, 
+                        df_processed, 
                         x='date', 
                         y=param_col, 
                         color='site_abbrev',
