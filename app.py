@@ -655,6 +655,11 @@ def view_data():
         user_email = st.session_state['user'].user.email
         is_user_admin = is_admin(user_email)
     
+    # Admin can toggle click-to-edit behavior (experimental)
+    use_click_to_edit = False
+    if is_user_admin:
+        use_click_to_edit = st.checkbox("Enable click-to-edit (experimental)", value=False, help="If enabled, clicking points selects them for editing. If disabled, use the selector below.")
+
     # Fetch and display data
     try:
         response = supabase.table('water_quality').select("*").order('date').execute()
@@ -736,19 +741,41 @@ def view_data():
                         'Swan River': '#00CC96'   # Plotly default green
                     }
                     
-                    # Create the plot with custom_data for click handling
-                    fig = px.line(
-                        df_dedup, 
-                        x='date', 
-                        y='__y__', 
-                        color='site_abbrev',
-                        title=f'{param_title} - All Sites',
-                        labels={'date': 'Date', '__y__': param_title, 'site_abbrev': 'Site'},
-                        custom_data=['site', 'id', 'date'],
-                        markers=True,
-                        color_discrete_map=color_map,
-                        category_orders={'site_abbrev': ['Blue River', 'Snake River', 'Swan River']}
-                    )
+                    # Build figure (optionally using a GO-based path for admins to avoid any PX heuristics)
+                    if is_user_admin and st.checkbox(f"Use GO renderer for {param_title}", value=False, key=f"go_toggle_{param_col}"):
+                        fig = go.Figure()
+                        for site_name, group in df_dedup.groupby('site_abbrev'):
+                            group = group.sort_values('date')
+                            fig.add_trace(go.Scatter(
+                                x=group['date'],
+                                y=group['__y__'].astype(float),
+                                mode='lines+markers',
+                                name=site_name,
+                                hovertemplate="<b>%{fullData.name}</b><br>Date: %{x|%m/%d/%Y}<br>" +
+                                              f"{param_title}: %{{y}}<extra></extra>",
+                                line=dict(color=color_map.get(site_name, '#666'))
+                            ))
+                        fig.update_layout(
+                            title=f'{param_title} - All Sites',
+                            xaxis_title='Date',
+                            yaxis_title=param_title,
+                            height=400,
+                            hoverlabel=dict(bgcolor="white", bordercolor="black", font_size=12, font_family="Arial")
+                        )
+                    else:
+                        # Create the plot with custom_data for click handling (PX path)
+                        fig = px.line(
+                            df_dedup, 
+                            x='date', 
+                            y='__y__', 
+                            color='site_abbrev',
+                            title=f'{param_title} - All Sites',
+                            labels={'date': 'Date', '__y__': param_title, 'site_abbrev': 'Site'},
+                            custom_data=['site', 'id', 'date'],
+                            markers=True,
+                            color_discrete_map=color_map,
+                            category_orders={'site_abbrev': ['Blue River', 'Snake River', 'Swan River']}
+                        )
                     
                     fig.update_layout(
                         height=400,
@@ -771,10 +798,10 @@ def view_data():
                     )
                     
                     # Show interactive charts for admin users, regular charts for volunteers
-                    if is_user_admin:
+                    if is_user_admin and use_click_to_edit:
                         # Admin-only: provide the exact plotted data download for debugging
                         export_cols = ['date', 'site', 'site_abbrev', '__y__', 'id']
-                        csv_bytes = df_processed[export_cols].to_csv(index=False).encode('utf-8')
+                        csv_bytes = df_dedup[export_cols].to_csv(index=False).encode('utf-8')
                         with st.expander(f"Download plotted data for {param_title}", expanded=False):
                             st.download_button(
                                 label="Download CSV",
@@ -782,6 +809,8 @@ def view_data():
                                 file_name=f"plotted_{param_col}.csv",
                                 mime="text/csv"
                             )
+                            st.caption("Preview of plotted rows:")
+                            st.dataframe(df_dedup[export_cols].head(12))
                         # Use a simpler key that doesn't change
                         clicked_points = plotly_events(
                             fig,
@@ -830,8 +859,25 @@ def view_data():
                                     site_name = site_mapping.get(clicked_row['site'], clicked_row['site'])
                                     st.success(f"✅ Selected: {site_name} - {clicked_row['date'].strftime('%m/%d/%Y')} | Go to 'Add or Edit Data' tab to edit")
                     else:
-                        # Show regular non-interactive chart for volunteers
+                        # Show regular chart and provide a selector for admins
                         st.plotly_chart(fig, width='stretch')
+                        if is_user_admin:
+                            with st.expander(f"Select a record to edit for {param_title}", expanded=False):
+                                # Build unique site/date pairs from df_dedup
+                                options = (
+                                    df_dedup[['site_abbrev','site','date','id','__y__']]
+                                    .sort_values(['site_abbrev','date'])
+                                )
+                                # Display as buttons to set clicked_id
+                                for _, r in options.iterrows():
+                                    site_name = site_mapping.get(r['site'], r['site'])
+                                    label = f"{site_name} — {r['date'].strftime('%m/%d/%Y')} — value: {r['__y__']}"
+                                    if st.button(label, key=f"pick_{param_col}_{r['id']}"):
+                                        st.session_state['clicked_id'] = r['id']
+                                        st.session_state['clicked_site'] = r['site']
+                                        st.session_state['clicked_date'] = r['date'].strftime('%m/%d/%Y')
+                                        st.success("Record selected. Go to 'Add or Edit Data'.")
+                                        st.rerun()
                     
                     # Add separation line after each graph
                     st.markdown("---")
