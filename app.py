@@ -145,8 +145,29 @@ def edit_data():
             
             st.subheader("Existing Data Entries")
             
+            # Pagination controls (15 per page)
+            PAGE_SIZE = 15
+            total_rows = len(df)
+            total_pages = max(1, (total_rows + PAGE_SIZE - 1) // PAGE_SIZE)
+            current_page = st.session_state.get('entries_page', 0)
+            colp1, colp2, colp3 = st.columns([1, 2, 1])
+            with colp1:
+                if st.button("◀ Prev", disabled=current_page == 0):
+                    st.session_state['entries_page'] = max(0, current_page - 1)
+                    st.rerun()
+            with colp2:
+                st.write(f"Page {current_page + 1} of {total_pages} (Total {total_rows})")
+            with colp3:
+                if st.button("Next ▶", disabled=current_page >= total_pages - 1):
+                    st.session_state['entries_page'] = min(total_pages - 1, current_page + 1)
+                    st.rerun()
+
+            start = current_page * PAGE_SIZE
+            end = start + PAGE_SIZE
+            page_df = df.iloc[start:end]
+
             # Display data in a table with edit/delete actions
-            for idx, row in df.iterrows():
+            for idx, row in page_df.iterrows():
                 with st.expander(f"{row['site_display']} - {row['date']} (ID: {row['id']})"):
                     col1, col2 = st.columns([3, 1])
                     
@@ -517,15 +538,18 @@ def edit_data():
                                 }
                                 
                                 supabase.table('water_quality').update(update_data).eq('id', row['id']).execute()
-                                st.success("Data updated successfully!")
+                                # Toast near-time notification
+                                try:
+                                    st.toast("✅ Data updated successfully!", icon="✅")
+                                except Exception:
+                                    st.success("✅ Data updated successfully!")
+                                st.session_state['data_submitted'] = True
+                                st.session_state['success_message'] = "✅ Data updated successfully!"
                                 st.session_state.pop('editing_entry_id', None)
-                                
-                                # Clear cache so graphs update
                                 if hasattr(st, 'cache_data'):
                                     st.cache_data.clear()
                                 if hasattr(st, 'cache_resource'):
                                     st.cache_resource.clear()
-                                
                                 st.rerun()
                         
                         with col2:
@@ -1083,8 +1107,30 @@ def dashboard():
             with col1:
                 selected_site = st.selectbox("Site", temp_site_options, key="add_site_selection")
             with col2:
-                default_date = datetime.today().date()
-                selected_date = st.date_input("Date", value=default_date, format="MM/DD/YYYY", key="add_date_input")
+                show_existing_only = st.checkbox("Show only dates with existing data", value=False, help="Use this to pick from dates that already have data.")
+                if show_existing_only:
+                    try:
+                        db_site = site_name_mapping.get(selected_site, selected_site)
+                        resp = supabase.table('water_quality').select("date").eq('site', db_site).order('date').execute()
+                        date_rows = resp.data or []
+                    except Exception:
+                        date_rows = []
+                    options = []
+                    for r in date_rows:
+                        try:
+                            label = pd.to_datetime(r['date']).strftime('%m/%d/%Y')
+                            options.append(label)
+                        except Exception:
+                            continue
+                    if options:
+                        chosen_label = st.selectbox("Date (existing)", options, key="add_existing_date_select")
+                        selected_date = pd.to_datetime(chosen_label).date()
+                    else:
+                        st.info("No existing dates for this site. Using today.")
+                        selected_date = datetime.today().date()
+                else:
+                    default_date = datetime.today().date()
+                    selected_date = st.date_input("Date", value=default_date, format="MM/DD/YYYY", key="add_date_input")
             # Prepare empty existing_data to allow form to render
             existing_data = None
             existing_id = None
@@ -1369,25 +1415,27 @@ def dashboard():
                         if existing_id_local:
                             # Update existing record
                             supabase.table('water_quality').update(data).eq('id', existing_id_local).execute()
-                            success_message = "✅ Data updated successfully!"
+                            st.session_state['data_submitted'] = True
+                            st.session_state['success_message'] = "✅ Data updated successfully!"
+                            st.rerun()
                         else:
                             # Insert new record
                             supabase.table('water_quality').insert(data).execute()
-                            success_message = "✅ Data saved successfully!"
-                        
-                        # Clear caches
-                        if hasattr(st, 'cache_data'):
-                            st.cache_data.clear()
-                        if hasattr(st, 'cache_resource'):
-                            st.cache_resource.clear()
-                        
-                        # Set success message and clear pending save
-                        st.session_state['success_message'] = success_message
-                        st.session_state['data_submitted'] = True
-                        st.session_state.pop('pending_wq_save', None)
-                        
-                        st.rerun()
-                        
+                            # Toast on add
+                            try:
+                                st.toast("✅ Data submitted successfully!", icon="✅")
+                            except Exception:
+                                pass
+                            st.session_state['data_submitted'] = True
+                            st.session_state['success_message'] = "✅ Data submitted successfully!"
+                            # Reset to a clean form state on next load
+                            for k in [
+                                'do_mg_na','do_sat_na','hardness_na','alkalinity_na','ph_na','temp_na','flow_na',
+                                'form_site','form_date','add_site_selection','add_date_input','edit_site_selection','edit_date_selection'
+                            ]:
+                                if k in st.session_state:
+                                    st.session_state.pop(k)
+                            st.rerun()
                     except Exception as e:
                         st.error(f"Error submitting data: {str(e)}")
                         st.exception(e)
