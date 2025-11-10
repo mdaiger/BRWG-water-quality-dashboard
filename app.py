@@ -362,200 +362,6 @@ def edit_data():
                                     st.rerun()
             
             # Removed obsolete duplicate single edit form block
-                        
-                        # Find current site index
-                        current_site_idx = 0
-                        for i, (full_name, short_name) in enumerate(sites):
-                            if row['site'] == full_name or (row['site'] in ['Site 1', 'Site 2', 'Site 3'] and 
-                                                          site_mapping.get(row['site']) == short_name):
-                                current_site_idx = i
-                                break
-                        
-                        new_site = st.selectbox("Site", site_options, index=current_site_idx)
-                        new_date = st.date_input("Date", value=pd.to_datetime(row['date']).date())
-                        
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            # Dissolved Oxygen (mg/L)
-                            existing_do_mg = row['dissolved_oxygen_mg']
-                            col_input, col_checkbox = st.columns([3, 1])
-                            with col_checkbox:
-                                st.markdown('<div style="margin-top: 25px; font-size: 0.8em;">', unsafe_allow_html=True)
-                                do_mg_not_available = st.checkbox("N/A", 
-                                                                value=existing_do_mg is None, 
-                                                                key=f"edit_do_mg_not_available_{row['id']}",
-                                                                help="Check if no measurement was taken")
-                                st.markdown('</div>', unsafe_allow_html=True)
-                            with col_input:
-                                if do_mg_not_available:
-                                    st.text_input("Dissolved Oxygen (mg/L)", value="Data not available", disabled=True, key=f"edit_do_mg_disabled_{row['id']}")
-                                    do_mg = None
-                                else:
-                                    do_mg = st.number_input("Dissolved Oxygen (mg/L)", 
-                                                          value=float(existing_do_mg) if existing_do_mg is not None else 0.0, 
-                                                          format="%.2f", key=f"edit_do_mg_input_{row['id']}")
-                            
-                            # Dissolved Oxygen (% saturation)
-                            existing_do_sat = row['dissolved_oxygen_sat']
-                            col_input, col_checkbox = st.columns([3, 1])
-                            with col_input:
-                                dissolved_oxygen_sat = st.number_input("Dissolved Oxygen (% saturation)", 
-                                                                     value=float(existing_do_sat) if existing_do_sat is not None else 0.0, 
-                                                                     format="%.1f", key=f"edit_do_sat_input_{row['id']}")
-                            with col_checkbox:
-                                st.markdown('<div style="margin-top: 25px; font-size: 0.8em;">', unsafe_allow_html=True)
-                                do_sat_not_available = st.checkbox("N/A", 
-                                                                 value=existing_do_sat is None, 
-                                                                 key=f"edit_do_sat_not_available_{row['id']}",
-                                                                 help="Check if no measurement was taken")
-                                st.markdown('</div>', unsafe_allow_html=True)
-                            if do_sat_not_available:
-                                do_sat = None
-                            else:
-                                do_sat = dissolved_oxygen_sat
-                            
-                            # Hardness
-                            existing_hardness = row['hardness']
-                            col_input, col_checkbox = st.columns([3, 1])
-                            with col_checkbox:
-                                st.markdown('<div style="margin-top: 25px; font-size: 0.8em;">', unsafe_allow_html=True)
-                                hardness_not_available = st.checkbox("N/A", 
-                                                                    value=existing_hardness is None, 
-                                                                    key=f"edit_hardness_not_available_{row['id']}",
-                                                                    help="Check if no measurement was taken")
-                                st.markdown('</div>', unsafe_allow_html=True)
-                            with col_input:
-                                if hardness_not_available:
-                                    st.text_input("Hardness (mg/L CaCO3)", value="Data not available", disabled=True, key=f"edit_hardness_disabled_{row['id']}")
-                                    hardness = None
-                                else:
-                                    hardness = st.number_input("Hardness (mg/L CaCO3)", 
-                                                             value=float(existing_hardness) if existing_hardness is not None else 0.0, 
-                                                             format="%.1f", key=f"edit_hardness_input_{row['id']}")
-                            
-                            # Alkalinity
-                            existing_alkalinity = row['alkalinity']
-                            col_input, col_checkbox = st.columns([3, 1])
-                            with col_input:
-                                alkalinity_value = st.number_input("Alkalinity (mg/L CaCO3)", 
-                                                                 value=float(existing_alkalinity) if existing_alkalinity is not None else 0.0, 
-                                                                 format="%.1f", key=f"edit_alkalinity_input_{row['id']}")
-                            with col_checkbox:
-                                st.markdown('<div style="margin-top: 25px; font-size: 0.8em;">', unsafe_allow_html=True)
-                                alkalinity_not_available = st.checkbox("N/A", 
-                                                                      value=existing_alkalinity is None, 
-                                                                      key=f"edit_alkalinity_not_available_{row['id']}",
-                                                                      help="Check if no measurement was taken")
-                                st.markdown('</div>', unsafe_allow_html=True)
-                            if alkalinity_not_available:
-                                alkalinity = None
-                            else:
-                                alkalinity = alkalinity_value
-                        
-                        with col2:
-                            # pH
-                            existing_ph = row['ph']
-                            col_input, col_checkbox = st.columns([3, 1])
-                            with col_input:
-                                ph_value = st.number_input("pH (S.U.s)", 
-                                                         value=float(existing_ph) if existing_ph is not None else 7.0, 
-                                                         format="%.1f", key=f"edit_ph_input_{row['id']}")
-                            with col_checkbox:
-                                st.markdown('<div style="margin-top: 25px; font-size: 0.8em;">', unsafe_allow_html=True)
-                                ph_not_available = st.checkbox("N/A", 
-                                                              value=existing_ph is None, 
-                                                              key=f"edit_ph_not_available_{row['id']}",
-                                                              help="Check if no measurement was taken")
-                                st.markdown('</div>', unsafe_allow_html=True)
-                            if ph_not_available:
-                                ph = None
-                            else:
-                                ph = ph_value
-                            
-                            # Temperature
-                            existing_temp = row['temperature']
-                            col_input, col_checkbox = st.columns([3, 1])
-                            with col_checkbox:
-                                st.markdown('<div style="margin-top: 25px; font-size: 0.8em;">', unsafe_allow_html=True)
-                                temp_not_available = st.checkbox("N/A", 
-                                                                value=existing_temp is None, 
-                                                                key=f"edit_temp_not_available_{row['id']}",
-                                                                help="Check if no measurement was taken")
-                                st.markdown('</div>', unsafe_allow_html=True)
-                            with col_input:
-                                if temp_not_available:
-                                    st.text_input("Temperature (°C)", value="Data not available", disabled=True, key=f"edit_temp_disabled_{row['id']}")
-                                    temp = None
-                                else:
-                                    temp = st.number_input("Temperature (°C)", 
-                                                         value=float(existing_temp) if existing_temp is not None else 0.0, 
-                                                         format="%.1f", key=f"edit_temp_input_{row['id']}")
-                            
-                            # Flow
-                            existing_flow = row['flow']
-                            col_input, col_checkbox = st.columns([3, 1])
-                            with col_input:
-                                flow_value = st.number_input("Flow (cfs)", 
-                                                           value=float(existing_flow) if existing_flow is not None else 0.0, 
-                                                           format="%.2f", key=f"edit_flow_input_{row['id']}")
-                            with col_checkbox:
-                                st.markdown('<div style="margin-top: 25px; font-size: 0.8em;">', unsafe_allow_html=True)
-                                flow_not_available = st.checkbox("N/A", 
-                                                                value=existing_flow is None, 
-                                                                key=f"edit_flow_not_available_{row['id']}",
-                                                                help="Check if no measurement was taken")
-                                st.markdown('</div>', unsafe_allow_html=True)
-                            if flow_not_available:
-                                flow = None
-                            else:
-                                flow = flow_value
-                            
-                            notes = st.text_area("Notes", value=row['notes'] if row['notes'] else "")
-                        
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            if st.form_submit_button("💾 Save Changes", type="primary"):
-                                # Map site name for database
-                                site_name_mapping = {
-                                    'Blue River at Silverthorne Pavilion- 196': 'Site 1',
-                                    'Snake River KSS- 52': 'Site 2',
-                                    'Swan River Reach A- 1007': 'Site 3'
-                                }
-                                db_site_name = site_name_mapping.get(new_site, new_site)
-                                
-                                # Update data in database
-                                update_data = {
-                                    'site': db_site_name,
-                                    'date': str(new_date),
-                                    'dissolved_oxygen_mg': do_mg,
-                                    'dissolved_oxygen_sat': do_sat,
-                                    'hardness': hardness,
-                                    'alkalinity': alkalinity,
-                                    'ph': ph,
-                                    'temperature': temp,
-                                    'flow': flow,
-                                    'notes': notes
-                                }
-                                
-                                supabase.table('water_quality').update(update_data).eq('id', row['id']).execute()
-                                # Toast near-time notification
-                                try:
-                                    st.toast("✅ Data updated successfully!", icon="✅")
-                                except Exception:
-                                    st.success("✅ Data updated successfully!")
-                                st.session_state['data_submitted'] = True
-                                st.session_state['success_message'] = "✅ Data updated successfully!"
-                                st.session_state.pop('editing_entry_id', None)
-                                if hasattr(st, 'cache_data'):
-                                    st.cache_data.clear()
-                                if hasattr(st, 'cache_resource'):
-                                    st.cache_resource.clear()
-                                st.rerun()
-                        
-                        with col2:
-                            if st.form_submit_button("❌ Cancel"):
-                                st.session_state.pop('editing_entry_id', None)
-                                st.rerun()
         
         else:
             st.info("No data entries found.")
@@ -1107,8 +913,10 @@ def dashboard():
             with col1:
                 selected_site = st.selectbox("Site", temp_site_options, key="add_site_selection")
             with col2:
-                show_existing_only = st.checkbox("Show only dates with existing data", value=False, help="Use this to pick from dates that already have data.")
-                if show_existing_only:
+                # Read current toggle state first to render Date widget before the toggle (so the toggle appears beneath Date)
+                show_existing_only_state = st.session_state.get("add_show_existing_only", False)
+
+                if show_existing_only_state:
                     try:
                         db_site = site_name_mapping.get(selected_site, selected_site)
                         resp = supabase.table('water_quality').select("date").eq('site', db_site).order('date').execute()
@@ -1131,6 +939,13 @@ def dashboard():
                 else:
                     default_date = datetime.today().date()
                     selected_date = st.date_input("Date", value=default_date, format="MM/DD/YYYY", key="add_date_input")
+
+                # Toggle appears directly beneath the Date widget
+                show_existing_only = st.checkbox(
+                    "Show only dates with existing data",
+                    key="add_show_existing_only",
+                    help="Use this to pick from dates that already have data."
+                )
             # Prepare empty existing_data to allow form to render
             existing_data = None
             existing_id = None
